@@ -1,0 +1,47 @@
+# test_db.py
+import psycopg2
+import os
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Manually define the DSN parameters
+# THESE LINES MUST BE PRESENT
+DB_HOST = 'localhost'
+DB_NAME = 'prototipo'
+DB_USER = 'admin'
+DB_PASSWORD = 'admin' # Use the simple password for testing
+DB_PORT = '5432'
+
+# Now, define the conn_params dictionary using these variables
+conn_params = {
+    'host': DB_HOST,
+    'dbname': DB_NAME, # Corrected: 'dbname' for psycopg2
+    'user': DB_USER,
+    'password': DB_PASSWORD,
+    'port': DB_PORT,
+    'client_encoding': 'UTF8'
+}
+
+# Você ainda pode logar a DSN string para depuração (mesmo que não seja usada diretamente na conexão)
+dsn_parts = []
+for key, value in conn_params.items():
+    if key == 'password':
+        dsn_parts.append(f"{key}=******")
+    else:
+        dsn_parts.append(f"{key}={value}")
+dsn_string_for_debug = " ".join(dsn_parts)
+
+logger.info(f"DSN String sendo usada (para debug): '{dsn_string_for_debug}'")
+logger.info(f"DSN Bytes (UTF-8 hex - para debug): {dsn_string_for_debug.encode('utf-8').hex()}")
+
+try:
+    # CHAME psycopg2.connect com os parâmetros diretamente
+    conn = psycopg2.connect(**conn_params) # <--- CORREÇÃO AQUI
+    logger.info("Conexão com o banco de dados bem-sucedida!")
+    conn.close()
+except Exception as e:
+    logger.error(f"Erro na conexão com o banco de dados: {e}")
+    import traceback
+    traceback.print_exc()

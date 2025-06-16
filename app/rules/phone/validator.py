@@ -6,10 +6,8 @@ from typing import Optional, Dict, Any
 
 # Configuração de logging
 logger = logging.getLogger(__name__)
-if not logger.handlers:
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# --- Configuração do "Database" Interno (regras em memória) ---
+## Configuração do "Database" Interno (regras em memória)
 
 # Conjunto de DDDs Válidos para buscas eficientes (O(1)) no Brasil
 DDD_VALIDOS_BR = {
@@ -21,28 +19,60 @@ DDD_VALIDOS_BR = {
     "93", "94", "95", "96", "97", "98", "99"
 }
 
-# Códigos de Regra específicos para telefone
-RNT_VALID_SYNTAX = "RNT001"            # Validação de sintaxe básica (phonenumbers ou regex)
-RNT_VALID_GEO = "RNT002"               # Validação geográfica (phonenumbers)
-RNT_POSSIBLE = "RNT003"                # Número possível, mas não válido (phonenumbers)
-RNT_FALLBACK_BR_VALID = "RNT004"       # Validação de fallback para números BR (válido)
-RNT_FALLBACK_INTERNATIONAL_VALID = "RNT005" # Validação de fallback para números internacionais (válido)
-RNT_INVALID_FORMAT = "RNT006"          # Formato geral inválido (erros de parsing, regex falha)
-RNT_FALLBACK_BR_INVALID_DDD = "RNT007" # Fallback: DDD inválido para BR
-RNT_FALLBACK_BR_INVALID_LEN = "RNT008" # Fallback: Comprimento inválido para BR
-RNT_PHONENUMBERS_PARSE_ERROR = "RNT009" # Erro específico de parsing do phonenumbers
-RNT_PHONENUMBERS_UNEXPECTED_ERROR = "RNT010" # Erro inesperado do phonenumbers
+# Códigos de serviço/emergência válidos para o Brasil (se `phonenumbers` não for usado)
+SERVICE_EMERGENCY_NUMBERS_BR = {
+    "190", # Polícia
+    "192", # SAMU
+    "193", # Bombeiros
+    "100", # Direitos Humanos
+    "180", # Central de Atendimento à Mulher
+    "181", # Disque Denúncia
+}
 
-# --- Configuração e carregamento da biblioteca phonenumbers ---
+# Mapeamento de tipos de telefone do phonenumbers para nomes amigáveis em português
+PHONE_TYPE_MAP = {
+    None: "Desconhecido", # Para o caso de phonenumbers.get_number_type retornar None
+}
+
+# Mapeamento de country_code_hint (ISO 3166-1 alpha-2) para country_code_number (ITU E.164)
+COUNTRY_CODE_HINT_TO_NUMBER = {
+    "BR": 55,
+    "US": 1,
+    "CA": 1,
+    "GB": 44, # UK
+    "DE": 49, # Germany
+    "FR": 33, # France
+    "ES": 34, # Spain
+    "PT": 351, # Portugal
+    "AR": 54, # Argentina
+    "MX": 52, # Mexico
+}
+
+# Códigos de Validação específicos para telefone (prefixo VAL_PHN)
+VAL_PHN001 = "VAL_PHN001"   # Válido e possível via phonenumbers
+VAL_PHN002 = "VAL_PHN002"   # Inválido via phonenumbers
+VAL_PHN003 = "VAL_PHN003"   # Input vazio ou tipo errado
+VAL_PHN004 = "VAL_PHN004"   # Possível mas não válido via phonenumbers
+VAL_PHN005 = "VAL_PHN005"   # Erro de parsing do phonenumbers
+VAL_PHN006 = "VAL_PHN006"   # Erro inesperado do phonenumbers
+VAL_PHN010 = "VAL_PHN010"   # Validação BR via fallback: Celular/Fixo válido
+VAL_PHN011 = "VAL_PHN011"   # Validação BR via fallback: DDD inválido
+VAL_PHN012 = "VAL_PHN012"   # Validação BR via fallback: Comprimento/formato inválido para BR
+VAL_PHN013 = "VAL_PHN013"   # Validação: Número sequencial/repetido
+VAL_PHN014 = "VAL_PHN014"   # Validação internacional via fallback: Válido (E.164 básico)
+VAL_PHN015 = "VAL_PHN015"   # Validação internacional via fallback: Comprimento inválido
+VAL_PHN016 = "VAL_PHN016"   # Validação de serviço/emergência (ex: 190, 192)
+VAL_PHN020 = "VAL_PHN020"   # Formato geral não reconhecido (fallback)
+
+## Configuração e carregamento da biblioteca phonenumbers
 
 PHONENUMBERS_AVAILABLE = True
 try:
     import phonenumbers
     from phonenumbers import PhoneNumberType, NumberParseException
-    from phonenumbers.phonenumberutil import CountryCodeSource # Importa para obter códigos de país
 
-    # Mapeamento de tipos de telefone do phonenumbers para nomes amigáveis em português
-    PHONE_TYPE_MAP = {
+    # Atualiza PHONE_TYPE_MAP com os enums reais de PhoneNumberType se phonenumbers está disponível
+    PHONE_TYPE_MAP.update({
         PhoneNumberType.UNKNOWN: "Desconhecido",
         PhoneNumberType.FIXED_LINE: "Fixo",
         PhoneNumberType.MOBILE: "Celular",
@@ -59,15 +89,7 @@ try:
         PhoneNumberType.STANDARD_RATE: "Tarifa Padrão",
         PhoneNumberType.EMERGENCY: "Emergência",
         PhoneNumberType.NO_TYPE: "Sem Tipo",
-    }
-
-    def _get_phone_type_name_safe(parsed_number_obj) -> str:
-        """
-        Função auxiliar para obter o nome amigável do tipo de telefone.
-        Garante que mesmo que o type não esteja no mapeamento, retorne algo útil.
-        """
-        num_type = phonenumbers.get_number_type(parsed_number_obj)
-        return PHONE_TYPE_MAP.get(num_type, f"Tipo Desconhecido ({num_type.name})")
+    })
 
 except ImportError:
     PHONENUMBERS_AVAILABLE = False
@@ -76,6 +98,16 @@ except Exception as e:
     PHONENUMBERS_AVAILABLE = False
     logger.error(f"Erro inesperado ao carregar ou configurar phonenumbers: {e}. Desativando phonenumbers.")
 
+# Função auxiliar para obter o nome amigável do tipo de telefone (acessível mesmo sem phonenumbers)
+def _get_phone_type_name_safe(parsed_number_obj) -> str:
+    """
+    Função auxiliar para obter o nome amigável do tipo de telefone.
+    Garante que mesmo que o type não esteja no mapeamento, retorne algo útil.
+    """
+    if PHONENUMBERS_AVAILABLE and parsed_number_obj:
+        num_type = phonenumbers.get_number_type(parsed_number_obj)
+        return PHONE_TYPE_MAP.get(num_type, f"Tipo Desconhecido ({num_type.name})")
+    return PHONE_TYPE_MAP.get(None) # Retorna "Desconhecido" se phonenumbers não estiver disponível
 
 class PhoneValidator:
     """
@@ -89,18 +121,105 @@ class PhoneValidator:
     - message (str): Mensagem explicativa do resultado.
     - source (str): A fonte da validação (e.g., "phonenumbers", "fallback_br").
     - details (dict): Detalhes específicos da validação.
-    - rule_code (str): Código da regra de negócio que foi aplicada.
+    - validation_code (str): Código da regra de VALIDAÇÃO que foi aplicada.
     """
 
     def __init__(self):
         pass
 
-    def validate(self, phone_number: str, country_code_hint: Optional[str] = None) -> Dict[str, Any]:
+    def _clean_number(self, phone_number: str) -> str:
+        """Remove caracteres não-dígitos do número."""
+        return re.sub(r'\D', '', phone_number)
+
+    def _is_sequential_or_repeated(self, cleaned_number: str) -> bool:
+        """Verifica se o número tem 4 ou mais dígitos sequenciais ou repetidos."""
+        # Não aplicamos essa regra para números muito curtos, como códigos de serviço
+        if len(cleaned_number) < 7: # Ajustado para ter um comprimento mínimo para esta regra
+            return False
+
+        # Verifica sequenciais (ex: 1234, 5432)
+        for i in range(len(cleaned_number) - 3):
+            subset = cleaned_number[i:i+4]
+            # Converte para int para comparação numérica
+            if all(d.isdigit() for d in subset): # Garante que são dígitos antes de int()
+                s0, s1, s2, s3 = int(subset[0]), int(subset[1]), int(subset[2]), int(subset[3])
+                if (s0 + 1 == s1 and s1 + 1 == s2 and s2 + 1 == s3): # Crescente
+                    return True
+                if (s0 - 1 == s1 and s1 - 1 == s2 and s2 - 1 == s3): # Decrescente
+                    return True
+
+        # Verifica repetidos (ex: 1111, 8888)
+        for i in range(len(cleaned_number) - 3):
+            subset = cleaned_number[i:i+4]
+            if subset[0] == subset[1] == subset[2] == subset[3]:
+                return True
+        return False
+
+    def _is_brazilian_ddd_valid(self, ddd: str) -> bool:
+        """Verifica se o DDD é um DDD brasileiro válido."""
+        return ddd in DDD_VALIDOS_BR
+
+    def _normalize_phone_number(self, phone_number: str, country_code_hint: Optional[str]) -> str:
+        """
+        Normaliza o número de telefone. Tenta usar phonenumbers se disponível.
+        Retorna o número limpo mesmo se a normalização E.164 falhar.
+        Prioriza o formato E.164.
+        """
+        cleaned_number = self._clean_number(phone_number)
+
+        if not cleaned_number:
+            return ""
+
+        if PHONENUMBERS_AVAILABLE:
+            try:
+                if country_code_hint:
+                    parsed_number = phonenumbers.parse(cleaned_number, country_code_hint.upper())
+                else:
+                    parsed_number = phonenumbers.parse(cleaned_number)
+
+                if phonenumbers.is_possible_number(parsed_number):
+                    # Se for possível e/ou válido, formata para E.164
+                    return phonenumbers.format_number(parsed_number, phonenumbers.PhoneNumberFormat.E164)
+                else:
+                    return cleaned_number # Fallback to cleaned for further checks
+            except NumberParseException:
+                logger.debug(f"Erro de parsing phonenumbers em _normalize_phone_number para '{phone_number}': {NumberParseException}")
+                return cleaned_number
+            except Exception as e:
+                logger.error(f"Erro inesperado em phonenumbers.parse em _normalize_phone_number para '{phone_number}': {e}", exc_info=True)
+                return cleaned_number
+        else:
+            # Fallback para limpeza e formatação básica se phonenumbers não está disponível.
+            if cleaned_number.startswith("+"):
+                # Já está em formato internacional (ou tentativa), manter como está
+                return cleaned_number
+
+            # Tenta adicionar código de país se houver hint e não começar com '+'
+            if country_code_hint and country_code_hint.upper() in COUNTRY_CODE_HINT_TO_NUMBER:
+                country_num_code = COUNTRY_CODE_HINT_TO_NUMBER[country_code_hint.upper()]
+                # Para números brasileiros que não começam com +55 e já tem o DDD
+                if country_code_hint.upper() == "BR" and len(cleaned_number) >= 10:
+                    # Remove '0' inicial se for presente (ex: 011...)
+                    if cleaned_number.startswith("0") and len(cleaned_number) > 2:
+                        cleaned_number = cleaned_number[1:]
+                    
+                    # Se o número já tem o DDD, adicione apenas o +55.
+                    # Se já começa com o código do país, deixe como está.
+                    if not cleaned_number.startswith(str(country_num_code)):
+                        return f"+{country_num_code}{cleaned_number}"
+                    return cleaned_number # Já está ok (e.g., 5511...)
+                elif not cleaned_number.startswith(str(country_num_code)):
+                    # Para outros países, apenas adiciona o código do país
+                    return f"+{country_num_code}{cleaned_number}"
+            
+            return cleaned_number # Retorna o número limpo se nenhuma regra se aplica
+
+    async def validate_phone(self, phone_number: str, country_code_hint: Optional[str] = None) -> Dict[str, Any]:
         """
         Valida um número de telefone aplicando uma sequência de regras:
         1. Normalização do número.
         2. Validação com phonenumbers (se disponível e aplicável).
-        3. Validação de fallback usando regras em memória (DDDs, padrões básicos).
+        3. Validação de fallback usando regras em memória (DDDs, padrões básicos, sequenciais/repetidos).
 
         Args:
             phone_number (str): O número de telefone a ser validado.
@@ -113,208 +232,196 @@ class PhoneValidator:
             "is_valid": False,
             "cleaned_data": "",
             "message": "Falha na validação inicial.",
-            "source": "inicial", # Será atualizado durante o processo
+            "source": "inicial",
             "details": {
                 "input_original": phone_number,
-                "country_hint_used": country_code_hint,
+                "country_hint_used": country_code_hint.upper() if country_code_hint else None,
                 "type_detected": None,
                 "phonenumbers_possible": False,
                 "phonenumbers_valid": False,
-                "international_format_generated": False, # Indica se o E.164 foi gerado
+                "international_format_generated": False,
+                "country_code_detected": None,
+                "national_number": None,
             },
-            "rule_code": RNT_INVALID_FORMAT
+            "validation_code": VAL_PHN020
         }
 
-        # 1. Normaliza o número de telefone (tenta E.164 via phonenumbers primeiro)
-        normalized_number = self._normalize_phone_number(phone_number, country_code_hint)
-        result["cleaned_data"] = normalized_number
-        if normalized_number.startswith('+') and len(normalized_number) > 1: # Se foi formatado para internacional
-             result["details"]["international_format_generated"] = True
-
-        if not normalized_number:
-            result["message"] = "Número de telefone vazio ou não contém dígitos válidos."
-            result["rule_code"] = RNT_INVALID_FORMAT
+        if not phone_number or not isinstance(phone_number, str):
+            result["message"] = "Número de telefone deve ser uma string não vazia."
+            result["validation_code"] = VAL_PHN003
             return result
 
+        # 1. Normaliza o número de telefone
+        normalized_number = self._normalize_phone_number(phone_number, country_code_hint)
+        result["cleaned_data"] = normalized_number
+
+        if not normalized_number:
+            result["message"] = "Número de telefone vazio após limpeza ou não contém dígitos válidos."
+            result["validation_code"] = VAL_PHN003
+            return result
+        
+        # Extrai apenas dígitos para a verificação de sequencial/repetido
+        digits_only = self._clean_number(phone_number)
+        
         # 2. Tenta validação com phonenumbers (preferencial)
         if PHONENUMBERS_AVAILABLE:
             try:
-                # O phonenumbers.parse já tenta adivinhar a região se não há country_code_hint
-                # ou se o número começa com '+', mas a dica ajuda em números locais sem prefixo.
-                parsed_number = phonenumbers.parse(normalized_number, country_code_hint)
+                parsed_number = phonenumbers.parse(normalized_number, country_code_hint.upper() if country_code_hint else None)
                 result["source"] = "phonenumbers"
                 
                 result["details"]["phonenumbers_possible"] = phonenumbers.is_possible_number(parsed_number)
                 result["details"]["phonenumbers_valid"] = phonenumbers.is_valid_number(parsed_number)
-                result["details"]["country_code_detected"] = parsed_number.country_code if result["details"]["phonenumbers_valid"] else None
-                result["details"]["national_number"] = parsed_number.national_number if result["details"]["phonenumbers_valid"] else None
+                result["details"]["country_code_detected"] = parsed_number.country_code
+                result["details"]["national_number"] = parsed_number.national_number
 
                 if result["details"]["phonenumbers_valid"]:
                     result["is_valid"] = True
                     result["details"]["type_detected"] = _get_phone_type_name_safe(parsed_number)
-                    
-                    # Verifica validade para a região, se uma dica foi fornecida
-                    if country_code_hint and not phonenumbers.is_valid_number_for_region(parsed_number, country_code_hint):
-                        result["message"] = f"Número válido globalmente, mas não para a região '{country_code_hint}'."
-                        result["rule_code"] = RNT_VALID_GEO
-                    else:
-                        result["message"] = "Número de telefone válido (via phonenumbers)."
-                        result["rule_code"] = RNT_VALID_SYNTAX
-                    
-                    # Retorna imediatamente se válido pelo phonenumbers
+                    result["message"] = "Número de telefone válido (via phonenumbers)."
+                    result["validation_code"] = VAL_PHN001
+                    result["cleaned_data"] = phonenumbers.format_number(parsed_number, phonenumbers.PhoneNumberFormat.E164)
                     return result
 
                 elif result["details"]["phonenumbers_possible"]:
                     result["is_valid"] = False
                     result["message"] = "Número de telefone parece possível, mas não é válido (via phonenumbers)."
-                    result["rule_code"] = RNT_POSSIBLE
-                    # Não retorna aqui, continua para o fallback, pois "possível" não é "válido"
+                    result["validation_code"] = VAL_PHN004
+                    # Fall through to fallback rules if phonenumbers deems it only possible
                 else:
                     result["is_valid"] = False
                     result["message"] = "Número de telefone inválido para o padrão internacional (via phonenumbers)."
-                    result["rule_code"] = RNT_INVALID_FORMAT
-                    # Não retorna aqui, continua para o fallback
+                    result["validation_code"] = VAL_PHN002
+                    # Fall through to fallback rules
                     
             except NumberParseException as e:
-                logger.debug(f"Erro de parsing phonenumbers para '{normalized_number}': {e}")
+                logger.debug(f"Erro de parsing phonenumbers para '{normalized_number}': {e}. Tentando fallback.")
                 result["message"] = f"Erro de parsing do número de telefone: {e.args[0]}. Tentando fallback."
                 result["is_valid"] = False
-                result["rule_code"] = RNT_PHONENUMBERS_PARSE_ERROR
+                result["validation_code"] = VAL_PHN005
             except Exception as e:
                 logger.error(f"Erro inesperado no phonenumbers para '{normalized_number}': {e}", exc_info=True)
                 result["message"] = f"Erro inesperado durante a validação phonenumbers: {e}. Tentando fallback."
                 result["is_valid"] = False
-                result["rule_code"] = RNT_PHONENUMBERS_UNEXPECTED_ERROR
-        
-        # 3. Validação de Fallback (se phonenumbers não foi usado, falhou ou o número não é internacional completo)
-        # Esta camada tenta validar números com base em regras mais simples, úteis para formatos locais
-        # ou quando phonenumbers não está disponível/falha.
-        
-        # Se phonenumbers já marcou como válido, não sobrescrever com fallback
-        if result["is_valid"] and result["source"] == "phonenumbers":
+                result["validation_code"] = VAL_PHN006
+        else:
+            result["message"] = "Biblioteca 'phonenumbers' não disponível. Usando validação de fallback."
+
+        result["source"] = "fallback"
+
+        # **Lógica de Fallback:**
+
+        # Priorize a verificação de números de serviço/emergência (3 dígitos)
+        if len(digits_only) == 3 and digits_only.isdigit():
+            if digits_only in SERVICE_EMERGENCY_NUMBERS_BR:
+                result["is_valid"] = True
+                result["message"] = f"Número de serviço/emergência válido ({digits_only} via fallback)."
+                result["details"]["type_detected"] = "Emergência/Serviço BR"
+                result["validation_code"] = VAL_PHN016
+                result["details"]["country_code_detected"] = 55
+                try:
+                    result["details"]["national_number"] = int(digits_only)
+                except ValueError:
+                    result["details"]["national_number"] = None
+            else:
+                result["is_valid"] = False
+                result["message"] = "Número de 3 dígitos não reconhecido como serviço/emergência (via fallback)."
+                result["validation_code"] = VAL_PHN020
             return result
 
-        result["source"] = "fallback" # Agora a origem é fallback
+        # Verifica sequencial/repetido ANTES de outras regras genéricas
+        # Aplica a verificação de sequencial/repetido ao número *limpo*, não ao E.164 formatado
+        if self._is_sequential_or_repeated(digits_only):
+            result["is_valid"] = False
+            result["message"] = "Número de telefone inválido: sequencial ou com dígitos repetidos."
+            result["validation_code"] = VAL_PHN013
+            return result
 
-        # Fallback para números internacionais (já formatados com '+')
+        # Fallback para números internacionais (se começa com '+')
         if normalized_number.startswith('+'):
-            # Remove o '+' para verificar o comprimento do número com o código do país
-            number_without_plus = normalized_number[1:]
-            if 7 <= len(number_without_plus) <= 15: # Comprimento típico de números internacionais
-                result["is_valid"] = True
-                result["message"] = "Número internacional válido (formato E.164 básico via fallback)."
-                result["details"]["type_detected"] = "Internacional Básico"
-                result["rule_code"] = RNT_FALLBACK_INTERNATIONAL_VALID
-            else:
-                result["is_valid"] = False
-                result["message"] = "Número internacional com comprimento de dígitos inválido (via fallback)."
-                result["rule_code"] = RNT_INVALID_FORMAT
-        
-        # Fallback para números brasileiros (sem prefixo '+' ou apenas dígitos)
-        elif 10 <= len(normalized_number) <= 11: # Números brasileiros (DDDNnnnnn ou DDDNNnnnn)
-            ddd = normalized_number[:2]
-            if ddd not in DDD_VALIDOS_BR:
-                result["is_valid"] = False
-                result["message"] = f"DDD '{ddd}' inválido para o Brasil (via fallback)."
-                result["rule_code"] = RNT_FALLBACK_BR_INVALID_DDD
-            else:
-                numero_principal = normalized_number[2:]
-                # Celular brasileiro (9 dígitos, começando com 9)
-                if len(numero_principal) == 9 and numero_principal.startswith('9'):
+            temp_number_without_plus = normalized_number[1:]
+            
+            # Tenta separar código de país e número nacional
+            match = re.match(r'^(\d{1,4})(\d+)$', temp_number_without_plus)
+            if match:
+                country_code_str = match.group(1)
+                national_number_part = match.group(2)
+
+                if 7 <= len(national_number_part) <= 15: # Comprimento típico
                     result["is_valid"] = True
-                    result["message"] = "Número de telefone celular brasileiro válido (via fallback)."
-                    result["details"]["type_detected"] = "Celular BR"
-                    result["rule_code"] = RNT_FALLBACK_BR_VALID
-                # Fixo brasileiro (8 dígitos, começando com 2,3,4,5)
-                elif len(numero_principal) == 8 and numero_principal[0] in ('2', '3', '4', '5'):
-                    result["is_valid"] = True
-                    result["message"] = "Número de telefone fixo brasileiro válido (via fallback)."
-                    result["details"]["type_detected"] = "Fixo BR"
-                    result["rule_code"] = RNT_FALLBACK_BR_VALID
+                    result["message"] = "Número internacional válido (formato E.164 básico via fallback)."
+                    result["details"]["type_detected"] = "Internacional Básico"
+                    result["validation_code"] = VAL_PHN014
+                    try:
+                        result["details"]["country_code_detected"] = int(country_code_str)
+                    except ValueError:
+                        result["details"]["country_code_detected"] = None
+                    try:
+                        result["details"]["national_number"] = int(national_number_part)
+                    except ValueError:
+                        result["details"]["national_number"] = None
                 else:
                     result["is_valid"] = False
-                    result["message"] = "Número de telefone brasileiro com estrutura inválida (via fallback)."
-                    result["rule_code"] = RNT_FALLBACK_BR_INVALID_LEN # Mais específico
-        
-        elif len(normalized_number) == 3: # Números de serviço/emergência (ex: 190, 192)
-            result["is_valid"] = True
-            result["message"] = "Número de serviço/emergência válido (3 dígitos via fallback)."
-            result["details"]["type_detected"] = "Emergência/Serviço"
-            result["rule_code"] = RNT_FALLBACK_BR_VALID # Considera válido para BR
-        
-        else:
-            result["is_valid"] = False
-            result["message"] = "Número de telefone com formato ou comprimento não reconhecido (via fallback)."
-            result["rule_code"] = RNT_INVALID_FORMAT
+                    result["message"] = "Número internacional com comprimento de dígitos inválido (via fallback)."
+                    result["validation_code"] = VAL_PHN015
+            else:
+                result["is_valid"] = False
+                result["message"] = "Número internacional com formato básico não reconhecido (via fallback)."
+                result["validation_code"] = VAL_PHN020
             
-        return result
+            return result
 
-    def _normalize_phone_number(self, phone_number: str, country_code_hint: Optional[str] = None) -> str:
-        """
-        Limpa o número de telefone removendo caracteres não-dígitos e tenta
-        formatá-lo para E.164 se possível, usando phonenumbers ou uma heurística simples.
-        """
-        if not phone_number:
-            return ""
+        # Fallback para números brasileiros (se country_code_hint é BR ou detectado como tal)
+        # Use digits_only para as regras de comprimento e DDD brasileiras
+        if country_code_hint and country_code_hint.upper() == "BR" or \
+           (len(digits_only) >= 10 and digits_only.isdigit() and digits_only[:2] in DDD_VALIDOS_BR):
 
-        # Remove todos os caracteres não-dígitos, exceto o '+' inicial
-        if phone_number.startswith('+'):
-            cleaned_number = '+' + ''.join(filter(str.isdigit, phone_number[1:]))
-        else:
-            cleaned_number = ''.join(filter(str.isdigit, phone_number))
+            if 10 <= len(digits_only) <= 11:
+                ddd = digits_only[:2]
+                numero_principal = digits_only[2:]
 
-        if not cleaned_number:
-            return "" # Retorna vazio se não houver dígitos
-
-        # Tenta formatar para E.164 usando phonenumbers, se disponível
-        if PHONENUMBERS_AVAILABLE:
-            try:
-                # Primeiro, tenta parsear o número limpo como está
-                # Se for um número internacional com '+', tenta parsear sem dica.
-                # Se não tem '+', tenta com a dica de país.
-                if cleaned_number.startswith('+'):
-                    parsed = phonenumbers.parse(cleaned_number, None)
-                elif country_code_hint:
-                    parsed = phonenumbers.parse(cleaned_number, country_code_hint.upper())
+                if not self._is_brazilian_ddd_valid(ddd):
+                    result["is_valid"] = False
+                    result["message"] = f"DDD '{ddd}' inválido para o Brasil (via fallback)."
+                    result["validation_code"] = VAL_PHN011
                 else:
-                    # Se não tem '+' e não tem hint, tenta com 'BR' como default para a normalização inicial
-                    parsed = phonenumbers.parse(cleaned_number, "BR") 
-
-                # Se o parse resultou em um número possível/válido, formatar para E.164
-                if phonenumbers.is_valid_number(parsed) or phonenumbers.is_possible_number(parsed):
-                    return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-            except NumberParseException:
-                logger.debug(f"Normalization failed for '{cleaned_number}' with phonenumbers. Falling back.")
-                pass # Ignora erros de parse e continua para o fallback de normalização
-            except Exception as e:
-                logger.warning(f"Unexpected error during phonenumbers normalization for '{cleaned_number}': {e}")
-                pass # Continua para o fallback de normalização
-        
-        # Fallback de normalização: garante o '+' para validação posterior se for o caso
-        # Esta lógica só será executada se phonenumbers não estiver disponível ou falhou na normalização
-        if not cleaned_number.startswith('+'):
-            if country_code_hint:
-                # Tenta obter o código de país a partir da dica da região via phonenumbers
-                if PHONENUMBERS_AVAILABLE:
+                    # Celular brasileiro (11 dígitos, começando com 9 após DDD)
+                    if len(digits_only) == 11 and numero_principal.startswith('9'):
+                        result["is_valid"] = True
+                        result["message"] = "Número de telefone celular brasileiro válido (via fallback)."
+                        result["details"]["type_detected"] = "Celular BR"
+                        result["validation_code"] = VAL_PHN010
+                        result["cleaned_data"] = f"+55{digits_only}" # Garante E.164 para BR
+                    # Fixo brasileiro (10 dígitos, DDD + 8 dígitos)
+                    elif len(digits_only) == 10 and numero_principal[0] in ('2', '3', '4', '5'):
+                        result["is_valid"] = True
+                        result["message"] = "Número de telefone fixo brasileiro válido (via fallback)."
+                        result["details"]["type_detected"] = "Fixo BR"
+                        result["validation_code"] = VAL_PHN010
+                        result["cleaned_data"] = f"+55{digits_only}" # Garante E.164 para BR
+                    else:
+                        result["is_valid"] = False
+                        result["message"] = "Número de telefone brasileiro com estrutura inválida (DDD + número)."
+                        result["validation_code"] = VAL_PHN012
+                # Preencher country_code_detected e national_number para BR
+                if result["is_valid"] or result["validation_code"] == VAL_PHN011:
+                    result["details"]["country_code_detected"] = 55
                     try:
-                        country_code = phonenumbers.CountryCodeSource.get_country_code_for_region(country_code_hint.upper())
-                        if country_code:
-                            return f'+{country_code}{cleaned_number}'
-                    except Exception:
-                        pass # Falha ao obter o código, segue para heurísticas
-                
-                # Heurísticas mais simples se phonenumbers não ajudou ou não está disponível
-                if country_code_hint.upper() == 'BR' and (len(cleaned_number) == 10 or len(cleaned_number) == 11):
-                    return '+55' + cleaned_number
-                elif country_code_hint.upper() == 'US' and len(cleaned_number) == 10: 
-                    return '+1' + cleaned_number
-                # Poderia ter mais mapeamentos de países aqui ou um mecanismo mais genérico
-
-            # Último recurso se não há hint específico ou se as heurísticas falharam:
-            # Se é um número longo que parece um número de telefone mas não tem prefixo internacional,
-            # adiciona '+' genericamente. Isso é um risco e deve ser usado com cautela.
-            if len(cleaned_number) >= 7: # Mínimo de dígitos para ser um número de telefone
-                logger.debug(f"Adding '+' prefix as last resort for '{cleaned_number}'")
-                return '+' + cleaned_number
-            
-        return cleaned_number # Retorna o número limpo como está se nenhum padrão foi aplicado
+                        result["details"]["national_number"] = int(digits_only)
+                    except ValueError:
+                        result["details"]["national_number"] = None
+            else: # Comprimento inválido para número brasileiro
+                result["is_valid"] = False
+                result["message"] = "Número de telefone brasileiro com comprimento inválido (10 ou 11 dígitos esperados)."
+                result["validation_code"] = VAL_PHN012 # Reutilizado para comprimento BR inválido
+                result["details"]["country_code_detected"] = 55 if ddd else None
+                try:
+                    result["details"]["national_number"] = int(digits_only)
+                except ValueError:
+                    result["details"]["national_number"] = None
+            return result
+        
+        # Caso geral: número não se encaixou em nenhuma regra específica
+        result["is_valid"] = False
+        result["message"] = "Número de telefone com formato ou comprimento não reconhecido (via fallback)."
+        result["validation_code"] = VAL_PHN020
+        return result

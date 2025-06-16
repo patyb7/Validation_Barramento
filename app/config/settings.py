@@ -3,139 +3,88 @@
 import os
 import json
 import logging
-from dotenv import load_dotenv, find_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import ValidationError
 from typing import Dict, Any, Optional
 
-# Importar as bibliotecas do Azure Key Vault
-from azure.identity import DefaultAzureCredential
-from azure.keyvault.secrets import SecretClient
-from azure.core.exceptions import ResourceNotFoundError, ClientAuthenticationError
+# --- FORÇAR A SENHA 'admin' DIRETAMENTE NO AMBIENTE (para DEBUG local) ---
+# Esta linha pode ser removida ou comentada em produção, se a senha
+# for definida por variáveis de ambiente do sistema operacional ou .env
+# REMOVA OU COMENTE ISSO EM PRODUÇÃO. É uma medida de segurança ruim.
+os.environ["DB_PASSWORD"] = "admin"
+print(f"DEBUG INICIAL SETTINGS.PY: os.environ['DB_PASSWORD'] forçado para: '{os.environ['DB_PASSWORD']}'")
+print(f"DEBUG INICIAL SETTINGS.PY: os.environ['DB_PASSWORD'] forçado em HEX: {os.environ['DB_PASSWORD'].encode('utf-8').hex()}")
+# --- FIM DA FORÇAÇÃO ---
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuração de logging.
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# --- Carregamento de variáveis de ambiente do .env (para desenvolvimento local) ---
-dotenv_path = find_dotenv()
-if dotenv_path:
-    logger.info(f"DEBUG: Arquivo .env encontrado em: {dotenv_path}")
-    load_dotenv(dotenv_path) # Carrega as variáveis do .env no ambiente
-else:
-    logger.warning("DEBUG: Arquivo .env não encontrado. Tentando carregar de variáveis de ambiente ou Azure Key Vault.")
-
-# --- Configurações da aplicação ---
-class AppSettings(BaseSettings):
-    """
-    Configurações da aplicação e do banco de dados, carregadas de variáveis de ambiente.
-    Pode carregar do .env ou, em produção, do Azure Key Vault.
-    """
+class Settings(BaseSettings):
+    # Configuração para carregar variáveis de ambiente de um arquivo .env
     model_config = SettingsConfigDict(
-        env_file=".env", # Ainda pode ser usado como fallback ou para hints de Pydantic
-        env_file_encoding="utf-8",
-        case_sensitive=True,
-        # Se você quiser que o Pydantic ignore campos que não estão definidos na classe,
-        # mas que existem no .env ou Key Vault, você pode usar 'extra_forbidden'.
-        # Por padrão, Pydantic v2+ já faz isso. Se quiser permitir extras, use 'extra="allow"'
+        env_file=os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../.env'),
+        env_file_encoding='utf-8',
+        extra='ignore' # Ignora variáveis no .env que não estão no modelo
     )
 
-    # --- Configurações do Banco de Dados ---
-    DB_HOST: str
-    DB_NAME: str
-    DB_USER: str
-    DB_PASSWORD: str
+    # Configurações do Banco de Dados PostgreSQL
+    DB_HOST: str = "localhost"
+    DB_NAME: str = "prototipo"
+    DB_USER: str = "admin"
+    DB_PASSWORD: str # Esta variável será lida do ambiente/arquivo .env
     DB_PORT: int = 5432
+    DB_POOL_MIN_CONN: int = 1
+    DB_POOL_MAX_CONN: int = 10
 
-    # --- Configurações de Logging ---
-    LOG_LEVEL: str = "INFO"
-
-    # --- Configurações de API Keys ---
-    API_KEYS_SYSTEMS: str # Será uma string JSON vinda do KV ou .env
-
-    # --- Configuração do Azure Key Vault ---
-    # Optional[str] significa que pode ser None se não estiver definido
-    # Isso permite que a aplicação funcione sem Key Vault em dev local, por exemplo
-    AZURE_KEY_VAULT_NAME: Optional[str] = None # Nome do seu Key Vault, e.g., "MeuKeyVault"
-
+    # Adicionando a propriedade computada DATABASE_URL
     @property
-    def API_KEYS(self) -> Dict[str, Dict[str, Any]]:
+    def DATABASE_URL(self) -> str:
         """
-        Retorna as API Keys e seus metadados como um dicionário Python.
-        Faz o parse da string JSON de API_KEYS_SYSTEMS.
+        Monta a URL de conexão do banco de dados a partir das configurações.
         """
+        return (
+            f"postgresql://{self.DB_USER}:{self.DB_PASSWORD}@"
+            f"{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        )
+
+    # Chaves de API para autenticação de clientes
+    # Exemplo: {"API_KEY_SEGUROS": {"app_name": "Seguros App", "permissions": ["read", "write"]}, ...}
+    # ATENÇÃO: Em produção, estas chaves devem ser gerenciadas de forma mais segura (ex: HashiCorp Vault)
+    # Por enquanto, carregamos de uma variável de ambiente JSON ou de um valor padrão.
+    API_KEYS_JSON: str = os.getenv(
+        "API_KEYS_JSON", # Tenta carregar de uma variável de ambiente
+        json.dumps({ # Valor padrão se a variável de ambiente não existir
+            "API_KEY_SEGUROS": {"app_name": "Seguros App", "permissions": ["read", "write"]},
+            "API_KEY_FINANCAS": {"app_name": "Financas App", "permissions": ["read"]},
+            "API_KEY_ADMIN": {"app_name": "Admin Console", "permissions": ["read", "write", "delete"]}
+        })
+    )
+
+    # Propriedade computada para retornar as API Keys como um dicionário
+    @property
+    def API_KEYS(self) -> Dict[str, Any]:
         try:
-            parsed_keys = json.loads(self.API_KEYS_SYSTEMS)
-            if not isinstance(parsed_keys, dict):
-                raise ValueError("API_KEYS_SYSTEMS deve ser um JSON que representa um dicionário.")
-            return parsed_keys
-        except json.JSONDecodeError as e:
-            logger.critical(f"ERRO DE CONFIGURAÇÃO FATAL: Variável de ambiente API_KEYS_SYSTEMS não é um JSON válido. Detalhe: {e}")
-            raise ValueError("Configuração inválida para API_KEYS_SYSTEMS. Não é um JSON válido.") from e
-        except ValueError as e:
-            logger.critical(f"ERRO DE CONFIGURAÇÃO FATAL: {e}")
-            raise
+            keys = json.loads(self.API_KEYS_JSON)
+            if not isinstance(keys, dict):
+                raise ValueError("API_KEYS_JSON deve ser um objeto JSON que representa um dicionário.")
+            return keys
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Erro ao carregar API_KEYS_JSON: {e}. Usando dicionário vazio.")
+            return {}
 
-# --- Instância global das configurações ---
-# A lógica de carregamento do Key Vault será encapsulada aqui
-_settings_instance: Optional[AppSettings] = None
+    # Configurações de logging
+    LOG_LEVEL: str = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
-def get_settings() -> AppSettings:
-    """
-    Retorna a instância singleton das configurações.
-    Tenta carregar do Key Vault se AZURE_KEY_VAULT_NAME estiver definido
-    e as variáveis não estiverem no ambiente.
-    """
-    global _settings_instance
-    if _settings_instance is None:
-        try:
-            # Tenta carregar do ambiente (incluindo .env já carregado)
-            _settings_instance = AppSettings()
-            logger.info("Configurações carregadas com sucesso do ambiente.")
-
-        except ValidationError as e_env:
-            logger.warning(f"Erro de validação inicial do ambiente: {e_env.errors()}")
-            # Se falhar no ambiente, e AZURE_KEY_VAULT_NAME estiver definido, tenta o Key Vault
-            key_vault_name = os.getenv("AZURE_KEY_VAULT_NAME")
-            if key_vault_name:
-                logger.info(f"Tentando carregar segredos do Azure Key Vault: {key_vault_name}")
-                key_vault_uri = f"https://{key_vault_name}.vault.azure.net/"
-                try:
-                    credential = DefaultAzureCredential()
-                    secret_client = SecretClient(vault_url=key_vault_uri, credential=credential)
-
-                    # Recupera os segredos do Key Vault
-                    kv_secrets = {}
-                    kv_secrets["DB_HOST"] = secret_client.get_secret("DB-HOST").value
-                    kv_secrets["DB_NAME"] = secret_client.get_secret("DB-NAME").value
-                    kv_secrets["DB_USER"] = secret_client.get_secret("DB-USER").value
-                    kv_secrets["DB_PASSWORD"] = secret_client.get_secret("DB-PASSWORD").value
-                    kv_secrets["DB_PORT"] = secret_client.get_secret("DB-PORT").value # Valor já é string, Pydantic converterá para int
-                    kv_secrets["API_KEYS_SYSTEMS"] = secret_client.get_secret("API-KEYS-SYSTEMS").value
-                    # Você também pode buscar LOG_LEVEL se o tiver no KV
-                    # kv_secrets["LOG_LEVEL"] = secret_client.get_secret("LOG-LEVEL").value
-
-                    # Cria uma nova instância de AppSettings com os valores do Key Vault
-                    _settings_instance = AppSettings(**kv_secrets)
-                    logger.info("Configurações carregadas com sucesso do Azure Key Vault.")
-
-                except (ClientAuthenticationError, ResourceNotFoundError) as e_kv:
-                    logger.critical(f"ERRO DE AUTENTICAÇÃO/RECURSO AO ACESSAR KEY VAULT: {e_kv}. Verifique permissões e nome do Key Vault.")
-                    # Se falhou autenticando ou encontrando o recurso, levanta o erro original do Pydantic
-                    raise e_env from e_kv # Re-levanta o erro de validação original se o KV também falhar
-                except Exception as e_kv_general:
-                    logger.critical(f"ERRO INESPERADO ao carregar do Key Vault: {e_kv_general}")
-                    raise e_env from e_kv_general # Re-levanta o erro de validação original
-
-            else:
-                logger.critical("ERRO DE VALIDAÇÃO DE CONFIGURAÇÃO: As variáveis de ambiente necessárias não foram fornecidas ou estão inválidas, e AZURE_KEY_VAULT_NAME não está definido para fallback. Detalhe:")
-                logger.critical(e_env.errors())
-                exit(1) # Sair se não puder carregar as configurações obrigatórias
-
-        except Exception as e:
-            logger.critical(f"ERRO INESPERADO ao carregar configurações: {e}")
-            exit(1)
-    return _settings_instance
-
-# A instância global `settings` agora é uma chamada de função
-# Isso garante que a lógica de fallback para Key Vault seja executada
-settings = get_settings()
+# Cria uma instância única das configurações para ser importada em outros módulos
+try:
+    settings = Settings()
+    logging.getLogger().setLevel(settings.LOG_LEVEL) # Aplica o nível de log globalmente
+    logger.info("Configurações carregadas com sucesso do ambiente (incluindo .env se presente).")
+except ValidationError as e:
+    logger.error(f"Erro de validação nas configurações: {e.errors()}")
+    raise
+except Exception as e:
+    logger.error(f"Erro inesperado ao carregar configurações: {e}")
+    raise

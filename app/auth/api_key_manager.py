@@ -1,7 +1,6 @@
 # app/auth/api_key_manager.py
 
 from typing import Dict, Any, Optional
-from app.config.settings import settings # Importa a instância global das configurações
 
 class APIKeyManager:
     """
@@ -10,9 +9,15 @@ class APIKeyManager:
     um conjunto de chaves pré-configuradas, retornando os metadados
     da aplicação associada.
     """
+    def __init__(self, api_keys: Dict[str, Any]): # Mantenha o construtor
+        """
+        Inicializa o APIKeyManager com um dicionário de API Keys.
+        No futuro, esta classe pode ser estendida para carregar chaves de um Vault.
+        """
+        self.api_keys = api_keys
+        print(f"DEBUG APIKeyManager: Inicializado com {len(self.api_keys)} API Keys.")
 
-    @classmethod
-    def _get_api_key_from_headers(cls, headers: Dict[str, str]) -> Optional[str]:
+    def _get_api_key_from_headers(self, headers: Dict[str, str]) -> Optional[str]:
         """
         Extrai a API Key dos headers da requisição, procurando por "X-API-Key"
         de forma case-insensitive.
@@ -22,33 +27,26 @@ class APIKeyManager:
                 return value
         return None
 
-    @classmethod
-    def authenticate_request(cls, headers: Dict[str, str]) -> Dict[str, Any]:
+    def get_app_info(self, api_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna as informações da aplicação associada a uma API Key, se válida.
+        Este método é usado pelo ValidationService.
+        """
+        return self.api_keys.get(api_key)
+
+    def authenticate_request(self, headers: Dict[str, str]) -> Dict[str, Any]:
         """
         Autentica uma requisição verificando a API Key presente nos headers.
-
-        Args:
-            headers: Dicionário contendo os cabeçalhos da requisição HTTP.
-
-        Returns:
-            Um dicionário com o resultado da autenticação:
-            - "authenticated": True se a chave for válida, False caso contrário.
-            - "message": Mensagem de status ou erro.
-            - "app_info": (Opcional) Dicionário com metadados da aplicação associada à chave,
-                          se a autenticação for bem-sucedida.
         """
-        api_key = cls._get_api_key_from_headers(headers)
+        api_key = self._get_api_key_from_headers(headers)
 
         if not api_key:
             return {"authenticated": False, "message": "API Key não fornecida no cabeçalho 'X-API-Key'."}
         
-        # Acessa as API Keys configuradas via o objeto settings
-        app_info = settings.API_KEYS.get(api_key)
+        # Agora chama o método get_app_info que foi adicionado
+        app_info = self.get_app_info(api_key)
 
         if app_info:
-            # Você pode adicionar mais verificações aqui se quiser,
-            # por exemplo, para verificar se a API Key está ativa, expirada, etc.
             return {"authenticated": True, "app_info": app_info}
         else:
-            # Evita dar muitas informações sobre por que a chave falhou (segurança)
             return {"authenticated": False, "message": "API Key inválida ou não reconhecida."}

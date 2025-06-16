@@ -7,5 +7,65 @@
     "app_name": "Sistema de Financas",
     "can_delete_records": true,
     "access_level": "admin"
+  },
+  "API_KEY_ADMIN": {
+    "app_name": "Sistema de Administracao",
+    "can_delete_records": true,
+    "access_level": "superadmin"
+  },
+  "API_KEY_ANALYTICS": {
+    "app_name": "Sistema de Analytics",
+    "can_delete_records": false,
+    "access_level": "read-only"
+  },
+  "API_KEY_SUPPORT": {
+    "app_name": "Sistema de Suporte",
+    "can_delete_records": false,
+    "access_level": "support"
+  },
+  "API_KEY_INTEGRATIONS": {
+    "app_name": "Sistema de Integracoes",
+    "can_delete_records": true,
+    "access_level": "integration"
+  },
+  "API_KEY_DEVOPS": {
+    "app_name": "Sistema de DevOps",
+    "can_delete_records": true,
+    "access_level": "devops"
+  },
+  "API_KEY_TESTING": {
+    "app_name": "Sistema de Testes",
+    "can_delete_records": false,
+    "access_level": "testing"
+  },
+  "API_KEY_MAINTENANCE": {
+    "app_name": "Sistema de Manutencao",
+    "can_delete_records": true,
+    "access_level": "maintenance"
+  },
+  "API_KEY_SECURITY": {
+    "app_name": "Sistema de Seguranca",
+    "can_delete_records": true,
+    "access_level": "security"
+  },
+  "API_KEY_COMPLIANCE": {
+    "app_name": "Sistema de Compliance",
+    "can_delete_records": false,
+    "access_level": "compliance"
+  },
+  "API_KEY_MONITORING": {
+    "app_name": "Sistema de Monitoramento",
+    "can_delete_records": true,
+    "access_level": "monitoring"
+  },
+  "API_KEY_LOGGING": {
+    "app_name": "Sistema de Logging",
+    "can_delete_records": false,
+    "access_level": "logging"
+  },
+  "API_KEY_BACKUP": {
+    "app_name": "Sistema de Backup",
+    "can_delete_records": true,
+    "access_level": "backup"
   }
 }
