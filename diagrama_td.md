@@ -1,20 +1,15 @@
 Ótimo! Seguindo sua observação, vou manter o mesmo estilo da sua primeira imagem/diagrama, que usa subconjuntos, formas diferenciadas (banco de dados como cilindro, decisões em losango), e manter o fluxo na vertical (TD), melhorando alguns alinhamentos. O foco será na clareza, evitando setas cruzadas ao máximo.
-
 Resumo:
-
 Uso de subgrafos para contexto.
 Banco de dados no formato apropriado.
 Setas do fluxo principal sem sobreposição.
 Detalhamento suficiente para entender processos e especializações.
 Dicas para visualização:
-
 O fluxo central está vertical; módulos de decisão e banco seguem a ordem do processo.
 Validadores ficam legíveis ligados ao nó de decisão.
 Banco como cilindro, registros auditáveis destacados.
 Sem setas cruzadas, fluxo fluido e fácil de entender.
 Se quiser mais personalização ou ajuste de títulos, só avisar!
-
-
 flowchart TD
   %% Consumidores de aplicações
   subgraph Aplicativos_Consumidores ["Aplicativos Consumidores"]
