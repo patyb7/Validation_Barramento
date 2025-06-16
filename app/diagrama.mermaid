@@ -1,0 +1,32 @@
+graph TD
+    subgraph Aplicativos Consumidores
+        A[Sistema Consórcio] -->|1. Requisição POST /validate| B[API RESTful]
+        C[Sistema CRM] -->|1. Requisição POST /validate| B
+        D[Sistema Batch] -->|1. Requisição POST /validate| B
+    end
+
+    subgraph Serviço de Validações Gerais
+        B[API RESTful] -->|2. Autenticação - API Key| E[APIKeyManager]
+        B -->|3. Chamar Serviço| F[ValidationService]
+        F -->|4. Seleção Validador| G{Módulos de Validação Específicos}
+        G -->|4a. Ex: Telefone| G1[PhoneValidator]
+        G -->|4b. Ex: CEP| G2[CEPValidator]
+        G -->|4c. Outros...| G3[...]
+
+        F -->|5. Regras de Decisão| H[DecisionRules]
+
+        F -->|6. Persistência - CRUD| I[ValidationRecordRepository]
+        I -->|7. Armazenamento/Consulta| J[Banco de Dados PostgreSQL]
+    end
+
+    subgraph Operações MDM - Restrito
+        K[Sistema MDM] -->|POST /soft-delete /restore| B
+        B -- Acesso Restrito --> F
+    end
+
+    J -- Tabela: validacoes_gerais --> L[Registros Auditáveis]
+
+    F -- Retorno JSON --> B
+    B -->|8. Resposta JSON| A
+    B -->|8. Resposta JSON| C
+    B -->|8. Resposta JSON| D
