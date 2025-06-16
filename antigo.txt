@@ -1,0 +1,24 @@
+# .env
+
+DB_HOST=localhost
+# DB_TYPE pode ser 'postgres', 'mysql', etc.
+# Certifique-se de que o banco de dados esteja rodando na porta especificada
+# e que as credenciais estejam corretas.
+# Configurações do banco de dados
+DB_NAME=prototipo
+DB_USER=admin
+DB_PASSWORD=admin
+DB_PORT=5432
+LOG_LEVEL=INFO
+# API_KEYS_SYSTEMS deve ser uma string JSON
+# 'can_delete_records' é um exemplo de permissão que você pode usar para regras de negócio
+#API_KEYS_SYSTEMS="{\"API_KEY_SEGUROS\": {\"app_name\": \"Sistema de Seguros\", \"can_delete_records\": false}, \"API_KEY_FINANCAS\": {\"app_name\": \"Sistema de Finanças\", \"can_delete_records\": true, \"access_level\": \"admin\"}}"
+API_KEYS_FILE_PATH=./app/config/api_keys.json
+#API_KEYS_SYSTEMS="{\"API_KEY_SEGUROS\": {\"app_name\": \"Sistema de Seguros\", \"can_delete_records\": false}, \"API_KEY_FINANCAS\": {\"app_name\": \"Sistema de Finanças\", \"can_delete_records\": true, \"access_level\": \"admin\"}}"
+# .env
+# Para desenvolvimento local, você pode apontar para o seu Key Vault
+######################      AZURE_KEY_VAULT_NAME=nome-do-key-vault # Substitua pelo nome real do seu KV
+# As variáveis DB_HOST, DB_NAME, etc., podem ser removidas ou deixadas
+# para que o Pydantic tente carregá-las primeiro do ambiente (para testes rápidos)
+# ou forçar o carregamento do Key Vault se elas não estiverem no .env.
+# Em produção, você definiria AZURE_KEY_VAULT_NAME como uma variável de ambiente do serviço Azure.

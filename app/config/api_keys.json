@@ -1,0 +1,11 @@
+{
+  "API_KEY_SEGUROS": {
+    "app_name": "Sistema de Seguros",
+    "can_delete_records": false
+  },
+  "API_KEY_FINANCAS": {
+    "app_name": "Sistema de Financas",
+    "can_delete_records": true,
+    "access_level": "admin"
+  }
+}
