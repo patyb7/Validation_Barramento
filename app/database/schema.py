@@ -1,119 +1,193 @@
 # app/database/schema.py
-
-import logging
 import asyncpg
-from .manager import DatabaseManager
+import logging
+import json # Importa json para manipular dados JSONB
 
-# Importações para o Pydantic BaseModel
-from pydantic import BaseModel, Field
-from typing import Optional, Dict, Any
-from datetime import datetime
-
+# Configuração básica de logging para este módulo
 logger = logging.getLogger(__name__)
 
-# O script SQL para criar a tabela, diretamente no código ou lido de um arquivo
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS validacoes_gerais (
-    id SERIAL PRIMARY KEY,
-    regra_negocio_tipo VARCHAR(50),
-    regra_negocio_descricao TEXT,
-    regra_negocio_parametros JSONB,
-    usuario_criacao VARCHAR(255),
-    usuario_atualizacao VARCHAR(255),
-    dado_original VARCHAR(255) NOT NULL,
-    dado_normalizado VARCHAR(255),
+# --- Definições de DDL (Data Definition Language) ---
+# Agrupa todos os comandos SQL para criação de tabelas em uma única string
+CREATE_TABLES_SQL = """
+-- Cria a tabela validation_records se não existir
+CREATE TABLE IF NOT EXISTS validation_records (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Usando UUID como PK
+    dado_original TEXT NOT NULL,
+    dado_normalizado TEXT,
+    is_valido BOOLEAN NOT NULL,
     mensagem TEXT,
-    origem_validacao VARCHAR(100),
+    origem_validacao VARCHAR(50) NOT NULL,
     tipo_validacao VARCHAR(50) NOT NULL,
-    is_valido BOOLEAN NOT NULL, -- Mantido "is_valido" para evitar conflito com "valido" se ambos forem campos
-    data_validacao TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     app_name VARCHAR(100) NOT NULL,
-    client_identifier VARCHAR(255),
+    client_identifier TEXT,
+    validation_details JSONB,
+    data_validacao TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    
+    -- Campos de regras de negócio (desnormalizados para facilitar consulta)
     regra_negocio_codigo VARCHAR(50),
-    validation_details JSONB DEFAULT '{}',
-    is_deleted BOOLEAN DEFAULT FALSE,
-    deleted_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    regra_negocio_descricao TEXT,
+    regra_negocio_tipo VARCHAR(50),
+    regra_negocio_parametros JSONB,
+
+    -- Gerenciamento de ciclo de vida e Golden Record
+    usuario_criacao TEXT,
+    usuario_atualizacao TEXT,
+    is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_golden_record BOOLEAN NOT NULL DEFAULT FALSE, -- Indica se este registro é o Golden Record
+    golden_record_id UUID, -- ID do Golden Record (pode ser o próprio ID ou de outro registro), alterado para UUID
+    status_qualificacao VARCHAR(50), -- Por exemplo, 'QUALIFIED', 'UNQUALIFIED', 'PENDING'
+    last_enrichment_attempt_at TIMESTAMPTZ, -- Timestamp da última tentativa de enriquecimento
+    client_entity_id TEXT -- ID da entidade cliente, se aplicável
+    -- Removida a cláusula WHERE da UNIQUE constraint aqui, será adicionada como um índice único parcial
+    -- UNIQUE (dado_normalizado, tipo_validacao, app_name, client_identifier) WHERE is_deleted = FALSE
 );
 
--- Opcional: Adicionar índices para otimizar buscas
-CREATE INDEX IF NOT EXISTS idx_validacoes_gerais_tipo_validacao ON validacoes_gerais (tipo_validacao);
-CREATE INDEX IF NOT EXISTS idx_validacoes_gerais_app_name ON validacoes_gerais (app_name);
-CREATE INDEX IF NOT EXISTS idx_validacoes_gerais_data_validacao ON validacoes_gerais (data_validacao DESC);
-CREATE INDEX IF NOT EXISTS idx_validacoes_gerais_dado_original_tipo_app ON validacoes_gerais (dado_original, tipo_validacao, app_name);
-CREATE INDEX IF NOT EXISTS idx_validacoes_gerais_dado_normalizado_tipo_app ON validacoes_gerais (dado_normalizado, tipo_validacao, app_name);
+-- Cria a tabela api_keys se não existir
+CREATE TABLE IF NOT EXISTS api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Alterado para UUID
+    api_key_hash TEXT NOT NULL UNIQUE, -- Armazena o hash da chave, não a chave em texto claro
+    app_name VARCHAR(100) NOT NULL,
+    access_level VARCHAR(50) NOT NULL, -- Ex: 'standard', 'admin', 'psdc', 'mdm'
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    permissions JSONB DEFAULT '{}'::jsonb -- Ex: {"can_delete_records": true, "can_check_duplicates": true}
+);
 
--- Opcional: Adicionar função e trigger para atualizar 'updated_at' automaticamente
-CREATE OR REPLACE FUNCTION update_updated_at_column()
+-- Cria a tabela business_rules se não existir
+CREATE TABLE IF NOT EXISTS business_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Alterado para UUID
+    rule_code VARCHAR(50) NOT NULL UNIQUE,
+    rule_description TEXT NOT NULL,
+    rule_type VARCHAR(50) NOT NULL, -- Ex: 'phone', 'document', 'address', 'email', 'global'
+    criteria JSONB NOT NULL DEFAULT '{}'::jsonb, -- Condições para aplicação da regra
+    actions JSONB NOT NULL DEFAULT '{}'::jsonb, -- Ações a serem tomadas quando a regra é aplicada
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    priority INTEGER NOT NULL DEFAULT 100, -- Prioridade de aplicação (menor número = maior prioridade)
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Cria a tabela golden_records_metadata para rastrear Golden Records por tipo de dado
+CREATE TABLE IF NOT EXISTS golden_records_metadata (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), -- Alterado para UUID
+    dado_normalizado TEXT NOT NULL,
+    tipo_validacao VARCHAR(50) NOT NULL,
+    golden_record_id UUID NOT NULL, -- ID do registro em validation_records que é o GR, alterado para UUID
+    last_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (dado_normalizado, tipo_validacao) -- Garante um único GR por dado normalizado/tipo
+);
+"""
+
+# Agrupa todos os comandos SQL para criação de índices em uma única string
+CREATE_INDEXES_SQL = """
+CREATE INDEX IF NOT EXISTS idx_validation_records_type_normalized ON validation_records (tipo_validacao, dado_normalizado);
+CREATE INDEX IF NOT EXISTS idx_validation_records_app_name ON validation_records (app_name);
+CREATE INDEX IF NOT EXISTS idx_validation_records_is_valid ON validation_records (is_valido);
+CREATE INDEX IF NOT EXISTS idx_validation_records_is_deleted ON validation_records (is_deleted);
+CREATE INDEX IF NOT EXISTS idx_validation_records_golden_record_id ON validation_records (golden_record_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_api_key_hash ON api_keys (api_key_hash);
+CREATE INDEX IF NOT EXISTS idx_business_rules_rule_type ON business_rules (rule_type);
+
+-- Adicionada esta linha para criar o índice único parcial
+CREATE UNIQUE INDEX IF NOT EXISTS uix_validation_records_active_unique ON validation_records (dado_normalizado, tipo_validacao, app_name, client_identifier) WHERE is_deleted = FALSE;
+"""
+
+# Agrupa todos os comandos SQL para criação de funções e triggers em uma única string
+CREATE_TRIGGERS_SQL = """
+-- Função genérica para atualizar 'updated_at' ou 'last_updated_at'
+CREATE OR REPLACE FUNCTION update_timestamp_column()
 RETURNS TRIGGER AS $$
 BEGIN
-    NEW.updated_at = NOW();
+    NEW.updated_at = NOW(); -- Assume 'updated_at' como nome padrão
+    IF TG_TABLE_NAME = 'golden_records_metadata' THEN -- Lida com 'last_updated_at' para golden_records_metadata
+        NEW.last_updated_at = NOW();
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_validacoes_gerais_updated_at ON validacoes_gerais;
-CREATE TRIGGER trg_validacoes_gerais_updated_at
-BEFORE UPDATE ON validacoes_gerais
-FOR EACH ROW
-EXECUTE FUNCTION update_updated_at_column();
+-- Trigger para a tabela validation_records
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'set_validation_records_updated_at') THEN
+        CREATE TRIGGER set_validation_records_updated_at
+        BEFORE UPDATE ON validation_records
+        FOR EACH ROW
+        EXECUTE FUNCTION update_timestamp_column();
+    END IF;
+END
+$$;
+
+-- Trigger para a tabela api_keys
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'set_api_keys_updated_at') THEN
+        CREATE TRIGGER set_api_keys_updated_at
+        BEFORE UPDATE ON api_keys
+        FOR EACH ROW
+        EXECUTE FUNCTION update_timestamp_column();
+    END IF;
+END
+$$;
+
+-- Trigger para a tabela business_rules
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'set_business_rules_updated_at') THEN
+        CREATE TRIGGER set_business_rules_updated_at
+        BEFORE UPDATE ON business_rules
+        FOR EACH ROW
+        EXECUTE FUNCTION update_timestamp_column();
+    END IF;
+END
+$$;
+
+-- Trigger para a tabela golden_records_metadata
+-- Note que a função update_timestamp_column já foi modificada para lidar com 'last_updated_at'
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'set_golden_records_metadata_updated_at') THEN
+        CREATE TRIGGER set_golden_records_metadata_updated_at
+        BEFORE UPDATE ON golden_records_metadata
+        FOR EACH ROW
+        EXECUTE FUNCTION update_timestamp_column();
+    END IF;
+END
+$$;
 """
 
-async def initialize_database(db_manager: DatabaseManager):
+async def initialize_database_schema(conn: asyncpg.Connection):
     """
-    Cria as tabelas necessárias no banco de dados se elas ainda não existirem.
-    Esta função é assíncrona e deve ser chamada com 'await'.
+    Verifica e inicializa o esquema do banco de dados, criando tabelas, índices e triggers
+    se eles ainda não existirem.
+
+    Esta função recebe uma conexão 'asyncpg.Connection' já ativa e a utiliza
+    para executar os comandos DDL.
     """
-    conn = None
+    logger.info("Executando DDL para criar tabelas, índices e triggers se não existirem...")
+    
     try:
-        conn = await db_manager.get_connection() 
-        logger.info("Executando DDL para criar tabela 'validacoes_gerais', índices e triggers se não existirem...")
-        await conn.execute(CREATE_TABLE_SQL) 
-        logger.info("Tabela 'validacoes_gerais' e objetos de banco de dados verificados/criados com sucesso.")
-    except asyncpg.exceptions.PostgresError as e: 
-        logger.critical(f"Erro CRÍTICO ao inicializar o banco de dados (asyncpg): {e}", exc_info=True)
-        raise 
+        # Executa a DDL para criar tabelas
+        await conn.execute(CREATE_TABLES_SQL)
+        logger.info("Tabelas verificadas/criadas.")
+
+        # Executa a DDL para criar índices
+        await conn.execute(CREATE_INDEXES_SQL)
+        logger.info("Índices verificados/criados.")
+
+        # Executa a DDL para criar funções e triggers
+        await conn.execute(CREATE_TRIGGERS_SQL)
+        logger.info("Funções e Triggers verificados/criados.")
+
+        logger.info("DDL de inicialização do banco de dados concluído com sucesso.")
+
+    except asyncpg.exceptions.PostgresError as e:
+        logger.critical(f"Erro no PostgreSQL durante a inicialização do banco de dados: {e}", exc_info=True)
+        raise # Re-lança a exceção para que o startup da aplicação falhe
     except Exception as e:
         logger.critical(f"Erro inesperado durante a inicialização do banco de dados: {e}", exc_info=True)
-        raise 
-    finally:
-        if conn:
-            await db_manager.put_connection(conn)
-
-
-### **Definição do Modelo Pydantic para `ValidationRecord`**
-
-# Este modelo representa a tabela 'validacoes_gerais' e é usado para validação de dados.
-class ValidationRecord(BaseModel):
-    id: Optional[int] = None # SERIAL PRIMARY KEY é auto-incremento
-    regra_negocio_tipo: Optional[str] = None # VARCHAR(50)
-    regra_negocio_descricao: Optional[str] = None # TEXT
-    regra_negocio_parametros: Optional[Dict[str, Any]] = Field(default_factory=dict) # JSONB
-    usuario_criacao: str # VARCHAR(255) NOT NULL
-    usuario_atualizacao: str # VARCHAR(255) NOT NULL
-    dado_original: str # VARCHAR(255) NOT NULL
-    dado_normalizado: Optional[str] = None # VARCHAR(255)
-    is_valido: bool # BOOLEAN NOT NULL (usando este campo, se for o que realmente quer)
-    mensagem: Optional[str] = None # TEXT
-    origem_validacao: Optional[str] = None # VARCHAR(100)
-    tipo_validacao: str # VARCHAR(50) NOT NULL
-    data_validacao: Optional[datetime] = None # TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    app_name: str # VARCHAR(100) NOT NULL
-    client_identifier: Optional[str] = None # VARCHAR(255)
-    regra_negocio_codigo: Optional[str] = None # VARCHAR(50)
-    validation_details: Dict[str, Any] = Field(default_factory=dict) # JSONB DEFAULT '{}'
-    is_deleted: Optional[bool] = False # BOOLEAN DEFAULT FALSE
-    deleted_at: Optional[datetime] = None # TIMESTAMP WITH TIME ZONE
-    created_at: Optional[datetime] = None # TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-    updated_at: Optional[datetime] = None # TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-
-    # Adicione a configuração para permitir atributos extras, caso o Record do asyncpg traga algo a mais
-    class Config:
-        extra = "ignore" # Permite campos extras que não estão no modelo sem erro
-        from_attributes = True # Pydantic v2: permite criar modelo a partir de objetos com atributos (como asyncpg.Record se convertido para dict, ou diretamente se ele tivesse __dict__)
-
-# Você tinha uma classe vazia ValidationRequest, se ela não for usada, pode remover.
-# Se for usada para Pydantic de entrada, defina-a aqui.
-# class ValidationRequest:
-#    pass
+        raise # Re-lança a exceção

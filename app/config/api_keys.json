@@ -1,71 +1,120 @@
 {
   "API_KEY_SEGUROS": {
     "app_name": "Sistema de Seguros",
-    "can_delete_records": false
+    "can_delete_records": false,
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_FINANCAS": {
     "app_name": "Sistema de Financas",
     "can_delete_records": true,
-    "access_level": "admin"
+    "access_level": "admin",
+    "can_check_duplicates": true,
+    "can_request_enrichment": false
   },
   "API_KEY_ADMIN": {
     "app_name": "Sistema de Administracao",
     "can_delete_records": true,
-    "access_level": "superadmin"
+    "access_level": "superadmin",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   },
-  "API_KEY_ANALYTICS": {
+  "API_KEY_ANALYTICS_READ_ONLY": {
     "app_name": "Sistema de Analytics",
     "can_delete_records": false,
-    "access_level": "read-only"
+    "access_level": "read-only",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_SUPPORT": {
     "app_name": "Sistema de Suporte",
     "can_delete_records": false,
-    "access_level": "support"
+    "access_level": "support",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_INTEGRATIONS": {
     "app_name": "Sistema de Integracoes",
     "can_delete_records": true,
-    "access_level": "integration"
+    "access_level": "integration",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   },
   "API_KEY_DEVOPS": {
     "app_name": "Sistema de DevOps",
     "can_delete_records": true,
-    "access_level": "devops"
+    "access_level": "devops",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   },
   "API_KEY_TESTING": {
     "app_name": "Sistema de Testes",
     "can_delete_records": false,
-    "access_level": "testing"
+    "access_level": "testing",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_MAINTENANCE": {
     "app_name": "Sistema de Manutencao",
     "can_delete_records": true,
-    "access_level": "maintenance"
+    "access_level": "maintenance",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   },
   "API_KEY_SECURITY": {
     "app_name": "Sistema de Seguranca",
     "can_delete_records": true,
-    "access_level": "security"
+    "access_level": "security",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   },
   "API_KEY_COMPLIANCE": {
     "app_name": "Sistema de Compliance",
     "can_delete_records": false,
-    "access_level": "compliance"
+    "access_level": "compliance",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_MONITORING": {
     "app_name": "Sistema de Monitoramento",
     "can_delete_records": true,
-    "access_level": "monitoring"
+    "access_level": "monitoring",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_LOGGING": {
     "app_name": "Sistema de Logging",
     "can_delete_records": false,
-    "access_level": "logging"
+    "access_level": "logging",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
   },
   "API_KEY_BACKUP": {
     "app_name": "Sistema de Backup",
     "can_delete_records": true,
-    "access_level": "backup"
+    "access_level": "backup",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
+  },
+  "API_KEY_NOTIFICATIONS": {
+    "app_name": "Sistema de Notificações",
+    "can_delete_records": false,
+    "access_level": "read-only",
+    "can_check_duplicates": false,
+    "can_request_enrichment": false
+  },
+  "API_KEY_USER_MANAGEMENT": {
+    "app_name": "Sistema de Gerenciamento de Usuarios",
+    "can_delete_records": true,
+    "access_level": "user-management",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
+  },
+  "API_KEY_PSDC": {
+    "app_name": "Sistema de PSDC",
+    "can_delete_records": true,
+    "access_level": "psdc",
+    "can_check_duplicates": true,
+    "can_request_enrichment": true
   }
 }
