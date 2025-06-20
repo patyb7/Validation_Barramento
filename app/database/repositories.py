@@ -3,10 +3,11 @@ import logging
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
 import json
+import uuid 
 import asyncpg
-import uuid # Adicionada a importação de uuid
+import re 
 
-from app.models.validation_record import ValidationRecord # Certifique-se de que ValidationRecord é importado corretamente
+from app.models.validation_record import ValidationRecord 
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,10 @@ class ValidationRecordRepository:
     async def create_record(self, record: ValidationRecord) -> Optional[ValidationRecord]:
         """
         Insere um novo registro de validação no banco de dados.
+        O ID é gerado automaticamente pelo banco de dados (UUID DEFAULT gen_random_uuid()).
         """
         insert_sql = """
         INSERT INTO validation_records (
-            id, -- Adicionado 'id' aqui, pois é gerado no Pydantic ou no código Python
             dado_original, dado_normalizado, is_valido, mensagem,
             origem_validacao, tipo_validacao, app_name, client_identifier,
             validation_details, regra_negocio_codigo, regra_negocio_descricao,
@@ -39,15 +40,8 @@ class ValidationRecordRepository:
         ) RETURNING id, created_at, updated_at, data_validacao;
         """
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn: 
-                # Se o ID não for definido, gerar um novo UUID
-                if record.id is None:
-                    record.id = str(uuid.uuid4())
-
-                row = await conn.fetchrow(
-                    insert_sql,
-                    str(record.id), # Garante que o UUID seja passado como string
+                params = [
                     record.dado_original,
                     record.dado_normalizado,
                     record.is_valido,
@@ -56,21 +50,31 @@ class ValidationRecordRepository:
                     record.tipo_validacao,
                     record.app_name,
                     record.client_identifier,
-                    json.dumps(record.validation_details), # Armazena como JSON string
+                    json.dumps(record.validation_details),
                     record.regra_negocio_codigo,
                     record.regra_negocio_descricao,
                     record.regra_negocio_tipo,
-                    json.dumps(record.regra_negocio_parametros) if record.regra_negocio_parametros is not None else None, # Armazena como JSON string ou NULL
+                    json.dumps(record.regra_negocio_parametros) if record.regra_negocio_parametros is not None else None,
                     record.usuario_criacao,
                     record.usuario_atualizacao,
                     record.is_deleted,
                     record.deleted_at,
                     record.is_golden_record,
-                    str(record.golden_record_id) if record.golden_record_id else None, # Garante que golden_record_id seja string ou None
+                    str(record.golden_record_id) if record.golden_record_id else None,
                     record.status_qualificacao,
                     record.last_enrichment_attempt_at,
                     record.client_entity_id
-                )
+                ]
+                
+                num_sql_placeholders = len(re.findall(r'\$\d+', insert_sql))
+                num_sql_cols_listed = len(insert_sql.split('(')[1].split(')')[0].split(','))
+
+                logger.debug(f"DEBUG REPO create_record: SQL columns listed count: {num_sql_cols_listed}")
+                logger.debug(f"DEBUG REPO create_record: SQL placeholders count: {num_sql_placeholders}")
+                logger.debug(f"DEBUG REPO create_record: Python parameters count: {len(params)}")
+                logger.debug(f"DEBUG REPO create_record: SQL (trimmed): {insert_sql.strip()}")
+
+                row = await conn.fetchrow(insert_sql, *params)
                 if row:
                     record.id = row['id']
                     record.created_at = row['created_at']
@@ -86,7 +90,7 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao criar registro: {e}", exc_info=True)
             return None
 
-    async def get_record_by_id(self, record_id: str, include_deleted: bool = False) -> Optional[ValidationRecord]: # Alterado para str
+    async def get_record_by_id(self, record_id: str, include_deleted: bool = False) -> Optional[ValidationRecord]:
         """
         Busca um registro de validação pelo seu ID.
         """
@@ -107,24 +111,29 @@ class ValidationRecordRepository:
             query_sql += " AND is_deleted = FALSE"
 
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(query_sql, record_id)
                 if row:
                     record_data = dict(row)
-                    # Converte de JSONB para dict Python (asyncpg já faz isso para JSONB)
-                    # A lógica de json.loads() não deve ser necessária se o driver asyncpg
-                    # estiver a lidar corretamente com colunas JSONB.
-                    # Mantenho o logger.warning para depuração se houver problema.
                     if 'validation_details' in record_data and record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
                     if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None # Permite None para Pydantic
+                        record_data['regra_negocio_parametros'] = None
 
-                    # Certifica que os campos datetime/Optional são None se forem nulos do DB
-                    for field in ['deleted_at', 'last_enrichment_attempt_at', 'golden_record_id', 'client_entity_id']:
+                    for field in ['deleted_at', 'last_enrichment_attempt_at', 'client_entity_id']: 
                         if field in record_data and record_data[field] is None:
                             record_data[field] = None
+
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord em get_record_by_id: {record_data}")
+                        return None 
 
                     return ValidationRecord(**record_data)
                 return None
@@ -135,7 +144,7 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao buscar registro {record_id}: {e}", exc_info=True)
             return None
 
-    async def update_record(self, record_id: str, record: ValidationRecord) -> Optional[ValidationRecord]: # Alterado para str
+    async def update_record(self, record_id: str, record: ValidationRecord) -> Optional[ValidationRecord]:
         """
         Atualiza um registro existente no banco de dados.
         """
@@ -167,7 +176,6 @@ class ValidationRecordRepository:
         RETURNING id, updated_at;
         """
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(
                     update_sql,
@@ -179,20 +187,20 @@ class ValidationRecordRepository:
                     record.tipo_validacao,
                     record.app_name,
                     record.client_identifier,
-                    json.dumps(record.validation_details), # Armazena como JSON string
+                    json.dumps(record.validation_details),
                     record.regra_negocio_codigo,
                     record.regra_negocio_descricao,
                     record.regra_negocio_tipo,
-                    json.dumps(record.regra_negocio_parametros) if record.regra_negocio_parametros is not None else None, # Armazena como JSON string ou NULL
+                    json.dumps(record.regra_negocio_parametros) if record.regra_negocio_parametros is not None else None,
                     record.usuario_atualizacao,
                     record.is_deleted,
                     record.deleted_at,
                     record.is_golden_record,
-                    str(record.golden_record_id) if record.golden_record_id else None, # Garante que golden_record_id seja string ou None
+                    str(record.golden_record_id) if record.golden_record_id else None,
                     record.status_qualificacao,
                     record.last_enrichment_attempt_at,
                     record.client_entity_id,
-                    record_id # O ID do registro a ser atualizado
+                    record_id 
                 )
                 if row:
                     record.id = row['id']
@@ -207,7 +215,7 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao atualizar registro {record_id}: {e}", exc_info=True)
             return None
 
-    async def soft_delete_record(self, record_id: str) -> bool: # Alterado para str
+    async def soft_delete_record(self, record_id: str) -> bool:
         """
         Executa um soft delete (exclusão lógica) de um registro.
         Define 'is_deleted' como TRUE e 'deleted_at' com o timestamp atual.
@@ -221,7 +229,6 @@ class ValidationRecordRepository:
         RETURNING id;
         """
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(update_sql, record_id)
                 if row:
@@ -231,12 +238,12 @@ class ValidationRecordRepository:
                 return False 
         except asyncpg.exceptions.PostgresError as e:
             logger.error(f"Erro ao soft-deletar registro {record_id}: {e}", exc_info=True)
-            return False
+            return False 
         except Exception as e:
             logger.error(f"Erro inesperado ao soft-deletar registro {record_id}: {e}", exc_info=True)
             return False
 
-    async def restore_record(self, record_id: str) -> bool: # Alterado para str
+    async def restore_record(self, record_id: str) -> bool:
         """
         Restaura um registro que foi soft-deletado (define 'is_deleted' como FALSE e 'deleted_at' como NULL).
         """
@@ -249,7 +256,6 @@ class ValidationRecordRepository:
         RETURNING id;
         """
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(update_sql, record_id)
                 if row:
@@ -267,7 +273,6 @@ class ValidationRecordRepository:
     async def get_last_records(self, limit: int = 10, include_deleted: bool = False) -> List[ValidationRecord]:
         """
         Retorna os últimos N registros de validação, opcionalmente incluindo os deletados.
-        Adicionado log detalhado para depuração de problemas de JSONDecodeError.
         """
         query_sql = """
         SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
@@ -288,12 +293,11 @@ class ValidationRecordRepository:
         if conditions:
             query_sql += " WHERE " + " AND ".join(conditions)
 
-        query_sql += " ORDER BY data_validacao DESC, id DESC LIMIT $1;" # Ordena pelo mais recente
+        query_sql += " ORDER BY data_validacao DESC, id DESC LIMIT $1;"
 
         records: List[ValidationRecord] = []
         try:
             logger.debug(f"Executando query para get_last_records: {query_sql.strip()} com limite {limit}")
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 rows = await conn.fetch(query_sql, limit)
                 logger.debug(f"Retornadas {len(rows)} linhas do banco de dados para histórico.")
@@ -302,32 +306,25 @@ class ValidationRecordRepository:
                     record_id = record_data.get('id', 'N/A')
                     logger.debug(f"Processando registro ID: {record_id}")
 
-                    # Asyncpg já deve converter JSONB para dict automaticamente.
-                    # Estes blocos try/except json.loads() são para lidar com casos onde o tipo não é JSONB ou está corrompido.
-                    # Mantenho-os como um "safety net".
                     if 'validation_details' in record_data and record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
                     if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
                         record_data['regra_negocio_parametros'] = None
                     
-                    # Certifica que os campos datetime/Optional são None se forem nulos do DB e os UUIDs são strings
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
                             record_data[field] = None
                     
-                    # Para golden_record_id, garantir que seja str ou None, vindo do DB
                     if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
                         record_data['golden_record_id'] = str(record_data['golden_record_id'])
                     else:
                         record_data['golden_record_id'] = None
                     
-                    # Para id, garantir que seja str, vindo do DB
                     if 'id' in record_data and record_data['id'] is not None:
                         record_data['id'] = str(record_data['id'])
                     else:
-                        # Se ID for None (o que não deveria acontecer para um registro lido), logar erro
                         logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
-                        continue # Pular este registro se não tiver um ID
+                        continue
 
                     try:
                         record_instance = ValidationRecord(**record_data)
@@ -369,7 +366,6 @@ class ValidationRecordRepository:
         
         records: List[ValidationRecord] = []
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 rows = await conn.fetch(query_sql, dado_normalizado, tipo_validacao)
                 for row in rows:
@@ -379,7 +375,6 @@ class ValidationRecordRepository:
                     if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
                         record_data['regra_negocio_parametros'] = None
 
-                    # Certifica que os campos datetime/Optional são None se forem nulos do DB e os UUIDs são strings
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
                             record_data[field] = None
@@ -405,7 +400,7 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao buscar registros por dado normalizado '{dado_normalizado}': {e}", exc_info=True)
             return []
 
-    async def update_golden_record_status(self, record_id: str, is_golden: bool, golden_record_id: Optional[str]) -> bool: # Alterado para str
+    async def update_golden_record_status(self, record_id: str, is_golden: bool, golden_record_id: Optional[str]) -> bool:
         """
         Atualiza o status de Golden Record para um registro específico.
         """
@@ -418,7 +413,6 @@ class ValidationRecordRepository:
         RETURNING id;
         """
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(update_sql, is_golden, golden_record_id, record_id)
                 if row:
@@ -433,7 +427,7 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao atualizar status GR do registro {record_id}: {e}", exc_info=True)
             return False
 
-    async def find_duplicate_record(self, dado_normalizado: str, tipo_validacao: str, app_name: str, client_identifier: Optional[str] = None, exclude_record_id: Optional[str] = None) -> Optional[ValidationRecord]: # Adicionado client_identifier, alterado exclude_record_id para str
+    async def find_duplicate_record(self, dado_normalizado: str, tipo_validacao: str, app_name: str, client_identifier: Optional[str] = None, exclude_record_id: Optional[str] = None) -> Optional[ValidationRecord]:
         """
         Busca um registro duplicado baseado em dado normalizado, tipo de validação e nome da aplicação.
         Exclui registros logicamente deletados e, opcionalmente, um ID de registro específico.
@@ -455,13 +449,13 @@ class ValidationRecordRepository:
           AND is_deleted = FALSE
         """
         params = [dado_normalizado, tipo_validacao, app_name]
-        param_idx = 4 # Começa com $4 para parâmetros adicionais
+        param_idx = 4 
 
         if client_identifier is not None:
             query_sql += f" AND client_identifier = ${param_idx}"
             params.append(client_identifier)
             param_idx += 1
-        else: # Se client_identifier for None, verificamos por NULL ou um campo vazio
+        else: 
              query_sql += f" AND (client_identifier IS NULL OR client_identifier = '')"
 
 
@@ -473,7 +467,6 @@ class ValidationRecordRepository:
         query_sql += " LIMIT 1;"
 
         try:
-            # CORREÇÃO: Removido 'await' extra aqui
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(query_sql, *params)
                 if row:
@@ -483,7 +476,6 @@ class ValidationRecordRepository:
                     if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
                         record_data['regra_negocio_parametros'] = None
                     
-                    # Certifica que os campos datetime/Optional são None se forem nulos do DB e os UUIDs são strings
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
                             record_data[field] = None
@@ -497,7 +489,7 @@ class ValidationRecordRepository:
                         record_data['id'] = str(record_data['id'])
                     else:
                         logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
-                        return None # Não deve retornar um registro sem ID
+                        return None 
 
                     logger.info(f"Duplicidade encontrada para '{dado_normalizado}' (Tipo: {tipo_validacao}, App: {app_name}). ID: {row['id']}")
                     return ValidationRecord(**record_data)
@@ -510,3 +502,173 @@ class ValidationRecordRepository:
             logger.error(f"Erro inesperado ao buscar duplicidade para '{dado_normalizado}': {e}", exc_info=True)
             return None
 
+    async def get_records_by_golden_record_id(self, golden_record_id: str, include_deleted: bool = False) -> List[ValidationRecord]:
+        """
+        Busca todos os registros associados a um Golden Record específico.
+        Útil para recuperar todos os registros que compõem um Golden Record.
+        """
+        query_sql = """
+        SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
+               origem_validacao, tipo_validacao, app_name, client_identifier,
+               validation_details, data_validacao,
+               regra_negocio_codigo, regra_negocio_descricao,
+               regra_negocio_tipo, regra_negocio_parametros,
+               usuario_criacao, usuario_atualizacao, is_deleted, deleted_at,
+               created_at, updated_at, is_golden_record, golden_record_id,
+               status_qualificacao, last_enrichment_attempt_at,
+               client_entity_id
+        FROM validation_records
+        WHERE golden_record_id = $1
+        """
+        if not include_deleted:
+            query_sql += " AND is_deleted = FALSE"
+
+        records: List[ValidationRecord] = []
+        try:
+            async with self.db_manager.get_connection() as conn:
+                rows = await conn.fetch(query_sql, golden_record_id)
+                for row in rows:
+                    record_data = dict(row)
+                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                        record_data['validation_details'] = {}
+                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = None
+
+                    for field in ['deleted_at', 'last_enrichment_attempt_at']:
+                        if field in record_data and record_data[field] is None:
+                            record_data[field] = None
+                    
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
+                        continue
+
+                    records.append(ValidationRecord(**record_data))
+            logger.info(f"Recuperados {len(records)} registros para Golden Record ID '{golden_record_id}'.")
+            return records
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Erro ao buscar registros por Golden Record ID '{golden_record_id}': {e}", exc_info=True)
+            return [] 
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar registros por Golden Record ID '{golden_record_id}': {e}", exc_info=True)
+            return []
+
+    async def get_records_by_client_entity_id(self, client_entity_id: str, include_deleted: bool = False) -> List[ValidationRecord]:
+        """
+        Busca todos os registros associados a um ID de entidade cliente específico.
+        Útil para recuperar todos os registros relacionados a uma entidade cliente.
+        """
+        query_sql = """
+        SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
+               origem_validacao, tipo_validacao, app_name, client_identifier,
+               validation_details, data_validacao,
+               regra_negocio_codigo, regra_negocio_descricao,
+               regra_negocio_tipo, regra_negocio_parametros,
+               usuario_criacao, usuario_atualizacao, is_deleted, deleted_at,
+               created_at, updated_at, is_golden_record, golden_record_id,
+               status_qualificacao, last_enrichment_attempt_at,
+               client_entity_id
+        FROM validation_records
+        WHERE client_entity_id = $1
+        """
+        if not include_deleted:
+            query_sql += " AND is_deleted = FALSE"
+
+        records: List[ValidationRecord] = []
+        try:
+            async with self.db_manager.get_connection() as conn:
+                rows = await conn.fetch(query_sql, client_entity_id)
+                for row in rows:
+                    record_data = dict(row)
+                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                        record_data['validation_details'] = {}
+                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = None
+
+                    for field in ['deleted_at', 'last_enrichment_attempt_at']:
+                        if field in record_data and record_data[field] is None:
+                            record_data[field] = None
+                    
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
+                        continue
+
+                    records.append(ValidationRecord(**record_data))
+            logger.info(f"Recuperados {len(records)} registros para Client Entity ID '{client_entity_id}'.")
+            return records
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Erro ao buscar registros por Client Entity ID '{client_entity_id}': {e}", exc_info=True)
+            return []
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar registros por Client Entity ID '{client_entity_id}': {e}", exc_info=True)
+            return []
+
+    async def get_records_by_app_name(self, app_name: str, include_deleted: bool = False) -> List[ValidationRecord]:
+        """
+        Busca todos os registros associados a um nome de aplicação específico.
+        Útil para recuperar todos os registros relacionados a uma aplicação.
+        """
+        query_sql = """
+        SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
+               origem_validacao, tipo_validacao, app_name, client_identifier,
+               validation_details, data_validacao,
+               regra_negocio_codigo, regra_negocio_descricao,
+               regra_negocio_tipo, regra_negocio_parametros,
+               usuario_criacao, usuario_atualizacao, is_deleted, deleted_at,
+               created_at, updated_at, is_golden_record, golden_record_id,
+               status_qualificacao, last_enrichment_attempt_at,
+               client_entity_id
+        FROM validation_records
+        WHERE app_name = $1
+        """
+        if not include_deleted:
+            query_sql += " AND is_deleted = FALSE"
+        
+        records: List[ValidationRecord] = []
+        try:
+            async with self.db_manager.get_connection() as conn:
+                rows = await conn.fetch(query_sql, app_name)
+                for row in rows:
+                    record_data = dict(row)
+                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                        record_data['validation_details'] = {}
+                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = None
+
+                    for field in ['deleted_at', 'last_enrichment_attempt_at']:
+                        if field in record_data and record_data[field] is None:
+                            record_data[field] = None
+                    
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
+                        continue
+
+                    records.append(ValidationRecord(**record_data))
+            logger.info(f"Recuperados {len(records)} registros para a aplicação '{app_name}'.")
+            return records
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Erro ao buscar registros por nome da aplicação '{app_name}': {e}", exc_info=True)
+            return []
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar registros por nome da aplicação '{app_name}': {e}", exc_info=True)
+            return []

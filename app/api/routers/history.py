@@ -1,121 +1,64 @@
 # app/api/routers/history.py
+"""
+Validation_Barramento/app/api/routers/history.py
+Este módulo define o endpoint de histórico de validação da API,
+permitindo a consulta dos registros de validação.
+"""
 import logging
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+from typing import List, Optional
+from fastapi import APIRouter, Query, Depends, HTTPException, status
 
-from fastapi import APIRouter, Request, HTTPException, status, Query, Depends
-
-# Importa os modelos Pydantic e a função de tratamento de erro do arquivo comum
+# Importa os modelos Pydantic e a função de tratamento de erro do common.py
 from app.api.schemas.common import HistoryRecordResponse, HistoryResponse, handle_service_response_error
-
-# IMPORTAR A FUNÇÃO DE DEPENDÊNCIA E A MENSAGEM DE ERRO
-from app.api.dependencies import get_validation_service_instance, VALIDATION_SERVICE_NOT_READY_MESSAGE 
+from app.api.dependencies import get_validation_service_instance, VALIDATION_SERVICE_NOT_READY_MESSAGE
 from app.services.validation_service import ValidationService # Para type hinting
 
 logger = logging.getLogger(__name__)
 
-# CORREÇÃO: Removido o prefixo "/api/v1" daqui, pois ele já é adicionado em main.py
-router = APIRouter(tags=["History & Records Management"])
+# CORREÇÃO: O prefixo "/api/v1" já é adicionado em main.py
+router = APIRouter(tags=["History"])
 
 # --- Endpoint de Histórico ---
-@router.get(
-    "/history", # Este caminho é relativo ao prefixo definido no include_router em main.py
+@router.get("/history",
     response_model=HistoryResponse,
     status_code=status.HTTP_200_OK,
-    summary="Obtém o histórico das últimas validações",
-    description="Retorna uma lista dos últimos N registros de validação. Por padrão, não inclui registros deletados logicamente. Use `include_deleted=true` para visualizá-los."
+    summary="Obtém o histórico de validações",
+    description="Retorna uma lista dos últimos registros de validação, com opções de limite e inclusão de registros deletados."
 )
-async def get_history_endpoint(
-    request: Request,
-    val_service: ValidationService = Depends(get_validation_service_instance),
-    limit: int = Query(5, ge=1, le=100, description="Número máximo de registros a serem retornados (1-100)."),
-    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados.")
+async def get_history(
+    limit: int = Query(10, ge=1, le=100, description="Número máximo de registros a retornar."),
+    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados no histórico."),
+    val_service: ValidationService = Depends(get_validation_service_instance)
 ):
     """
-    Obtém o histórico de validações registradas no sistema.
+    Retorna os últimos N registros de validação do sistema,
+    com a opção de incluir registros que foram logicamente deletados.
     """
-    if val_service is None: 
+    if val_service is None:
         logger.critical("ValidationService não inicializado no momento da requisição /history. (Erro de inicialização da dependência)")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
         )
-
-    history_result = await val_service.get_validation_history(
-        api_key=request.headers.get("x-api-key"),
+    
+    # Chama o serviço de validação para obter o histórico
+    records = await val_service.get_validation_history(
         limit=limit,
         include_deleted=include_deleted
     )
 
-    if history_result.get("status") == "error":
-        handle_service_response_error(history_result) 
-
-    return HistoryResponse(**history_result)
-
-# --- Endpoint de Soft Delete ---
-@router.put(
-    "/records/{record_id}/soft-delete", # Este caminho é relativo ao prefixo definido em main.py
-    status_code=status.HTTP_200_OK,
-    summary="Deleta logicamente um registro de validação",
-    description="Marca um registro de validação como 'deletado' sem removê-lo fisicamente do banco de dados. Requer autenticação por API Key (apenas para usuários MDM, via configuração de permissões na API Key)."
-)
-async def soft_delete_record_endpoint(
-    request: Request,
-    record_id: str, # Alterado para str, assumindo que UUIDs são strings
-    val_service: ValidationService = Depends(get_validation_service_instance)
-):
-    """
-    Marca um registro de validação como logicamente deletado.
-    """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /records/{record_id}/soft-delete. (Erro de inicialização da dependência)")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
-        )
-
-    result = await val_service.soft_delete_record(request.headers.get("x-api-key"), record_id)
-    if result.get("status") in ["error", "failed"]:
-        handle_service_response_error(result) 
-    return {"message": result.get("message")}
-
-# --- Endpoint de Restore ---
-@router.put(
-    "/records/{record_id}/restore", # Este caminho é relativo ao prefixo definido em main.py
-    status_code=status.HTTP_200_OK,
-    summary="Restaura um registro de validação deletado logicamente",
-    description="Reverte a operação de soft delete para um registro, tornando-o ativo novamente. Requer autenticação por API Key (apenas para usuários MDM, via configuração de permissões na API Key)."
-)
-async def restore_record_endpoint(
-    request: Request,
-    record_id: str, # Alterado para str, assumindo que UUIDs são strings
-    val_service: ValidationService = Depends(get_validation_service_instance)
-):
-    """
-    Restaura um registro de validação que foi logicamente deletado.
-    """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /records/{record_id}/restore. (Erro de inicialização da dependência)")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
-        )
-
-    result = await val_service.restore_record(request.headers.get("x-api-key"), record_id)
-    if result.get("status") in ["error", "failed"]:
-        handle_service_response_error(result) 
-    return {"message": result.get("message")}
+    # Converte os registros para o formato de resposta do Pydantic
+    # O Pydantic ValidationRecord já foi corrigido para aceitar UUIDs e JSONB
+    # então HistoryRecordResponse (que herda de ValidationRecord) deve funcionar.
+    history_records_response = [HistoryRecordResponse.model_validate(record.model_dump()) for record in records]
+    
+    return HistoryResponse(
+        status="success",
+        message="Histórico obtido com sucesso.",
+        data=history_records_response
+    )
 
 # --- Registro do Router ---
-# Este router deve ser incluído no app principal em main.py
-# A inclusão deve ser feita no arquivo main.py, onde o app é criado.
+# Este router deve ser incluído no app principal em main.py.
 # Exemplo de inclusão:
-# app.include_router(router, prefix="/api/v1", tags=["History & Records Management"])
-# --- Fim do módulo history.py ---
-# Este módulo define os endpoints para gerenciamento de histórico e registros de validação.
-# Ele inclui a obtenção do histórico de validações, soft delete e restauração de registros.
-# Certifique-se de que este router seja incluído no app principal em main.py
-# para que as rotas sejam reconhecidas.
-# --- Fim do módulo history.py ---
-# Certifique-se de que este router seja incluído no app principal em main.py
-# para que as rotas sejam reconhecidas.
+# app.include_router(history_router, prefix="/api/v1", tags=["History"])

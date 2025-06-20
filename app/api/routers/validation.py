@@ -19,8 +19,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Validation"])
 
 # --- Endpoint de Validação ---
-@router.post(
-    "/validate", # Este caminho é relativo ao prefixo definido no include_router em main.py
+@router.post("/validate", # Este caminho é relativo ao prefixo definido no include_router em main.py
     response_model=ValidationResponse,
     status_code=status.HTTP_200_OK,
     summary="Valida dados de diversos tipos (telefone, endereço, etc.)",
