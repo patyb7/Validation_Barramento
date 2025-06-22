@@ -1,7 +1,7 @@
 # app/rules/decision_rules.py
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
 # Importações internas (ajustado para absolutas, assumindo 'app' como raiz do projeto)
@@ -114,19 +114,18 @@ class DecisionRules:
         self.repo: ValidationRecordRepository = repo
         logger.info("DecisionRules inicializado com o catálogo de regras de negócio generalizado.")
 
-    async def apply_post_validation_actions(self, record: ValidationRecord, app_info: Dict[str, Any]) -> Dict[str, Any]:
+    async def apply_rules(self, record: ValidationRecord, app_info: Dict[str, Any], repository: ValidationRecordRepository) -> Dict[str, Any]:
         """
-        Aplica um conjunto de regras de decisão de negócio a um registro de validação
-        recém-criado, com base nas permissões e contexto da aplicação chamadora.
-        Modifica o 'record' diretamente (in-place) para atualizar 'regra_codigo' e 'validation_details'.
-
+        Aplica um conjunto de regras de negócio a um registro de validação.
+        As regras podem modificar o estado do registro (ex: is_valido, mensagem, is_deleted).
+        
         Args:
-            record: O objeto ValidationRecord recém-criado/salvo no banco de dados.
-            app_info: Dicionário contendo os metadados da aplicação (API Key).
-                      Esperado campos como 'app_name', 'can_delete_invalid', 'can_check_duplicates'.
-
+            record (ValidationRecord): O registro de validação a ser avaliado.
+            app_info (Dict[str, Any]): Informações da aplicação que fez a requisição, incluindo permissões.
+            repository (ValidationRecordRepository): Repositório para acesso ao DB, se as regras precisarem consultar dados.
+            
         Returns:
-            Um dicionário com um resumo das ações e regras de negócio aplicadas.
+            Dict[str, Any]: Um resumo das ações tomadas pelas regras.
         """
         app_name = app_info.get("app_name", "Aplicação Desconhecida")
         actions_summary = {}
@@ -427,3 +426,188 @@ class DecisionRules:
             }
             logger.debug(f"[{rule_code}] Verificação de duplicidade não aplicada para registro ID {record.id}. Válido: {record.is_valido}, Permissão: {app_info.get('can_check_duplicates', False)}, Dado Normalizado: {bool(record.dado_normalizado)}.")
 
+    async def get_business_rule_metadata(self, rule_code: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pelo código.
+        Se a regra não existir, retorna None.
+        """
+        return self.BUSINESS_RULES.get(rule_code, None)
+
+    async def get_all_business_rules(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Retorna todas as regras de negócio disponíveis com seus metadados.
+        """
+        return self.BUSINESS_RULES
+    async def get_applications_requiring_strict_phone(self) -> List[str]:
+        """
+        Retorna a lista de aplicações que exigem validação de telefone BR de celular e não sequencial/repetido.
+        """
+        return self.APPS_REQUIRING_STRICT_PHONE
+
+    async def get_rule_codes(self) -> List[str]:
+        """
+        Retorna uma lista de todos os códigos de regras de negócio disponíveis.
+        """
+        return list(self.BUSINESS_RULES.keys())
+
+    async def get_rule_names(self) -> List[str]:
+        """
+        Retorna uma lista de todos os nomes de regras de negócio disponíveis.
+        """
+        return [rule["name"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_types(self) -> List[str]:
+        """
+        Retorna uma lista de todos os tipos de regras de negócio disponíveis.
+        """
+        return list(set(rule["type"] for rule in self.BUSINESS_RULES.values()))
+
+    async def get_rule_descriptions(self) -> List[str]:
+        """
+        Retorna uma lista de todas as descrições de regras de negócio disponíveis.
+        """
+        return [rule["description"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_definitions(self) -> List[str]:
+        """
+        Retorna uma lista de todas as definições de regras de negócio disponíveis.
+        """
+        return [rule["rule_definition"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_impacts(self) -> List[str]:
+        """
+        Retorna uma lista de todos os impactos de regras de negócio disponíveis.
+        """
+        return [rule["impact"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_result_statuses(self) -> List[str]:
+        """
+        Retorna uma lista de todos os status de resultado de regras de negócio disponíveis.
+        """
+        return [rule["result_status"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_fail_statuses(self) -> List[str]:
+        """
+        Retorna uma lista de todos os status de falha de regras de negócio disponíveis.
+        """
+        return [rule["fail_status"] for rule in self.BUSINESS_RULES.values()]
+
+    async def get_rule_metadata(self, rule_code: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pelo código.
+        Se a regra não existir, retorna None.
+        """
+        return self.BUSINESS_RULES.get(rule_code, None)
+
+    async def get_all_rules_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Retorna todos os metadados de regras de negócio disponíveis.
+        """
+        return self.BUSINESS_RULES
+
+    async def get_rule_metadata_by_name(self, rule_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pelo nome.
+        Se a regra não existir, retorna None.
+        """
+        for code, metadata in self.BUSINESS_RULES.items():
+            if metadata["name"] == rule_name:
+                return metadata
+        return None
+
+    async def get_rule_metadata_by_type(self, rule_type: str) -> List[Dict[str, Any]]:
+        """
+        Retorna uma lista de metadados de regras de negócio pelo tipo.
+        Se não houver regras desse tipo, retorna uma lista vazia.
+        """
+        return [metadata for metadata in self.BUSINESS_RULES.values() if metadata["type"] == rule_type]
+
+    async def get_rule_metadata_by_description(self, description: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pela descrição.
+        Se a regra não existir, retorna None.
+        """
+        for code, metadata in self.BUSINESS_RULES.items():
+            if metadata["description"] == description:
+                return metadata
+        return None
+
+    async def get_rule_metadata_by_definition(self, definition: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pela definição.
+        Se a regra não existir, retorna None.
+        """
+        for code, metadata in self.BUSINESS_RULES.items():
+            if metadata["rule_definition"] == definition:
+                return metadata
+        return None
+
+    async def get_rule_metadata_by_impact(self, impact: str) -> List[Dict[str, Any]]:
+        """
+        Retorna uma lista de metadados de regras de negócio pelo impacto.
+        Se não houver regras com esse impacto, retorna uma lista vazia.
+        """
+        return [metadata for metadata in self.BUSINESS_RULES.values() if metadata["impact"] == impact]
+
+    async def get_rule_metadata_by_result_status(self, result_status: str) -> List[Dict[str, Any]]:
+        """
+        Retorna uma lista de metadados de regras de negócio pelo status de resultado.
+        Se não houver regras com esse status, retorna uma lista vazia.
+        """
+        return [metadata for metadata in self.BUSINESS_RULES.values() if metadata["result_status"] == result_status]
+
+    async def get_rule_metadata_by_fail_status(self, fail_status: str) -> List[Dict[str, Any]]:
+        """
+        Retorna uma lista de metadados de regras de negócio pelo status de falha.
+        Se não houver regras com esse status, retorna uma lista vazia.
+        """
+        return [metadata for metadata in self.BUSINESS_RULES.values() if metadata["fail_status"] == fail_status]
+
+    async def get_rule_metadata_by_code(self, rule_code: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pelo código.
+        Se a regra não existir, retorna None.
+        """
+        return self.BUSINESS_RULES.get(rule_code, None)
+
+    async def get_all_rules_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Retorna todos os metadados de regras de negócio disponíveis.
+        """
+        return self.BUSINESS_RULES
+
+    async def get_rule_metadata_by_name(self, rule_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pelo nome.
+        Se a regra não existir, retorna None.
+        """
+        for code, metadata in self.BUSINESS_RULES.items():
+            if metadata["name"] == rule_name:
+                return metadata
+        return None
+
+    async def get_rule_metadata_by_type(self, rule_type: str) -> List[Dict[str, Any]]:
+        """
+        Retorna uma lista de metadados de regras de negócio pelo tipo.
+        Se não houver regras desse tipo, retorna uma lista vazia.
+        """
+        return [metadata for metadata in self.BUSINESS_RULES.values() if metadata["type"] == rule_type]
+
+    async def get_rule_metadata_by_description(self, description: str) -> Optional[Dict[str, Any]]:
+        """
+        Retorna os metadados de uma regra de negócio específica pela descrição.
+        Se a regra não existir, retorna None.
+        """
+        for code, metadata in self.BUSINESS_RULES.items():
+            if metadata["description"] == description:
+                return metadata
+        return None
+    
+    """API Abrangente para Metadados de Regras: A inclusão de múltiplos métodos get_* (como get_rule_codes, get_rule_names, get_rule_metadata_by_type, etc.) para consultar os metadados das regras de negócio.
+
+Vantagem: Transforma a sua classe DecisionRules num verdadeiro serviço de regras de negócio, que pode ser consultado por outras partes da aplicação (ou até por uma interface de administração) para entender quais regras existem, suas descrições e impactos. Isso promove a transparência e facilita a integração."""
+"""Lógica Detalhada de Aplicação de Regras: As funções como _apply_phone_business_rules e _apply_cep_business_rules contêm condições detalhadas para acionar regras específicas com base em múltiplos critérios (resultado da validação primária, características do dado, aplicação chamadora).
+
+Vantagem: Permite a criação de regras de negócio complexas e contextuais. Cada regra que é acionada atualiza o objeto ValidationRecord com informações precisas sobre a regra (regra_negocio_codigo, regra_negocio_descricao, regra_negocio_parametros), o que é vital para a auditabilidade.Catálogo Centralizado de Regras (BUSINESS_RULES): A definição de um dicionário BUSINESS_RULES com metadados ricos para cada regra (tipo, nome, descrição, definição, impacto, etc.) é uma excelente prática.
+
+Vantagem: Permite que as regras sejam facilmente configuradas, documentadas e, no futuro, potencialmente geridas através de uma interface de utilizador ou sistema externo, sem alterar a lógica principal. Garante a auto-documentação e clareza sobre o propósito de cada regra."""

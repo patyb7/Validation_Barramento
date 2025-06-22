@@ -8,9 +8,13 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, HTTPException, status, Query, Depends
 
 # Importa os modelos Pydantic e a função de tratamento de erro do novo arquivo comum
+# CORREÇÃO: Certifique-se de que ValidationResponse é importado, não ValidationResult
 from ..schemas.common import UniversalValidationRequest, ValidationResponse, handle_service_response_error
-# Importa a função de dependência e a mensagem de erro de api_main
-from app.api.dependencies import get_validation_service_instance, VALIDATION_SERVICE_NOT_READY_MESSAGE
+# Importa a função de dependência (verifique o nome correto da sua dependência para ValidationService)
+# No seu caso, se estiver a usar get_validation_service_instance do dependencies.py, mantenha assim.
+# Caso contrário, pode ser get_validation_service se esse for o nome da sua função.
+# CORREÇÃO AQUI: Altera 'get_validation_service_instance' para 'get_validation_service'
+from app.api.dependencies import get_validation_service, VALIDATION_SERVICE_NOT_READY_MESSAGE 
 from app.services.validation_service import ValidationService # Para type hinting
 
 logger = logging.getLogger(__name__)
@@ -19,8 +23,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Validation"])
 
 # --- Endpoint de Validação ---
-@router.post("/validate", # Este caminho é relativo ao prefixo definido no include_router em main.py
-    response_model=ValidationResponse,
+@router.post(
+    "/validate", # Este caminho é relativo ao prefixo definido no include_router em main.py
+    response_model=ValidationResponse, # USANDO ValidationResponse, conforme common.py
     status_code=status.HTTP_200_OK,
     summary="Valida dados de diversos tipos (telefone, endereço, etc.)",
     description="Recebe um tipo de validação (`phone`, `address`, `email`, `document`), os dados correspondentes, autentica a API Key e registra o resultado no banco de dados. Retorna o status da validação e detalhes."
@@ -28,7 +33,9 @@ router = APIRouter(tags=["Validation"])
 async def validate_data_endpoint(
     request: Request,
     request_data: UniversalValidationRequest,
-    val_service: ValidationService = Depends(get_validation_service_instance)
+    # Use o nome da dependência correta para o seu ValidationService
+    # CORREÇÃO AQUI: Usa 'get_validation_service'
+    val_service: ValidationService = Depends(get_validation_service) 
 ):
     """
     Realiza a validação de um dado específico através do ValidationService.
@@ -43,28 +50,13 @@ async def validate_data_endpoint(
     api_key_used = request.headers.get("x-api-key")
 
     result = await val_service.validate_data(
-        api_key_str=api_key_used,
+        # O validate_data do serviço ValidationService espera `app_info` e não `api_key_str`.
+        # O middleware já populou `request.state.app_info`.
+        app_info=request.state.app_info, 
         request=request_data
     )
 
     if result.get("status") == "error":
         handle_service_response_error(result) 
     logger.info(f"Retornando ValidationResponse com dados: {result}")
-    return ValidationResponse(**result)
-
-# --- Registro do Router ---
-# Este router deve ser incluído no app principal em main.py
-# A inclusão deve ser feita no arquivo main.py, onde o app é criado.
-# Exemplo de inclusão:
-# app.include_router(router, prefix="/api/v1", tags=["Validation"])
-# --- Fim do módulo validation.py ---
-# Este módulo define o endpoint de validação de dados da API, permitindo a validação de diversos tipos de dados (telefone, endereço, email, documento) através do ValidationService.
-# Ele também inclui o tratamento de erros e a autenticação de API Key.
-# Certifique-se de que este router seja incluído no app principal em main.py
-# para que as rotas sejam reconhecidas.
-# --- Fim do módulo validation.py ---
-# Certifique-se de que este router seja incluído no app principal em main.py
-# para que as rotas sejam reconhecidas.
-# --- Fim do módulo validation.py ---
-# Certifique-se de que este router seja incluído no app principal em main.py
-# para que as rotas sejam reconhecidas.
+    return ValidationResponse(**result) # USANDO ValidationResponse

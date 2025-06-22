@@ -19,6 +19,7 @@ from app.rules.phone.validator import PhoneValidator
 from app.rules.address.cep.validator import CEPValidator
 from app.rules.email.validator import EmailValidator
 from app.rules.document.cpf_cnpj.validator import CpfCnpjValidator
+from app.rules.address.address_validator import AddressValidator # Certifique-se de importar o AddressValidator aqui
 
 # --- IMPORTAR OS APIRouter DE CADA ARQUIVO DE ROTA ---
 # ESTAS LINHAS SÃO CRÍTICAS PARA QUE AS ROTAS SEJAM RECONHECIDAS
@@ -57,17 +58,30 @@ async def lifespan(app: FastAPI):
         logger.info("Schema do banco de dados inicializado com sucesso.")
 
         validation_repo = ValidationRecordRepository(db_manager)
-        api_key_manager = APIKeyManager(settings.API_KEYS)
+        
+        # CORREÇÃO AQUI: Passe o caminho do arquivo (string), não o dicionário carregado
+        api_key_manager = APIKeyManager(settings.API_KEYS_FILE) 
+        
         decision_rules = DecisionRules(repo=validation_repo) 
+
+        # Os validadores são instanciados aqui e passados para o ValidationService
+        phone_validator = PhoneValidator()
+        cep_validator = CEPValidator()
+        email_validator = EmailValidator()
+        cpf_cnpj_validator = CpfCnpjValidator()
+        # Instanciar AddressValidator aqui para que possa ser injetado no ValidationService
+        address_validator = AddressValidator(cep_validator=cep_validator)
         
         validation_service = ValidationService(
             api_key_manager=api_key_manager,
             repo=validation_repo,
             decision_rules=decision_rules, # Reutiliza a instância
-            phone_validator=PhoneValidator(),
-            cep_validator=CEPValidator(),
-            email_validator=EmailValidator(),
-            cpf_cnpj_validator=CpfCnpjValidator()
+            phone_validator=phone_validator,
+            cep_validator=cep_validator,
+            email_validator=email_validator,
+            cpf_cnpj_validator=cpf_cnpj_validator,
+            # Passar a instância de AddressValidator para o ValidationService
+            address_validator=address_validator 
         )
 
         app.state.db_manager = db_manager
@@ -118,6 +132,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "Configuração interna do servidor falhou."}
             )
 
+        # Usar get_app_info para obter as informações da aplicação
         app_info: Dict[str, Any] = api_key_manager.get_app_info(api_key)
         
         if not app_info:
@@ -126,11 +141,14 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
                 content={"detail": "API Key inválida ou não autorizada."}
             )
 
-        request.state.auth_app_name = app_info.get("app_name")
+        # Armazenar o app_info completo no request.state para uso posterior
+        request.state.app_info = app_info
+        request.state.auth_app_name = app_info.get("app_name") # Mantido para compatibilidade de logs
         request.state.can_delete_records = app_info.get("can_delete_records", False)
         
         logger.info(f"API Key '{request.state.auth_app_name}' autenticada para o caminho '{path}'.")
 
+        # Verificação de permissões para operações específicas (ex: soft-delete)
         if path.startswith("/api/v1/records/") and ("soft-delete" in path or "restore" in path):
             if not request.state.can_delete_records:
                 return JSONResponse(
@@ -170,4 +188,4 @@ async def root():
 # sejam reconhecidos pela aplicação FastAPI.
 app.include_router(health_router, prefix="/api/v1") 
 app.include_router(history_router, prefix="/api/v1") 
-app.include_router(validation_router, prefix="/api/v1") 
+app.include_router(validation_router, prefix="/api/v1")

@@ -2,7 +2,7 @@
 import requests
 import json
 import logging
-from typing import Dict, Any, Optional # Adicionada a importação de Optional
+from typing import Dict, Any, Optional 
 
 # Configuração de logging para os testes
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -54,62 +54,53 @@ if __name__ == "__main__":
 
     # Teste de Validação de Telefone (INVÁLIDO: sequencial/repetido)
     phone_payload_invalid = {
-        "validation_type": "telefone",
-        "data": {
-            "phone_number": "+5511987654321",
-            "country_hint": "BR"
-        },
+        "type": "telefone", # CORRIGIDO: de validation_type para type
+        "data": "+5511987654321", # CORRIGIDO: dado como string direta
         "client_identifier": "cliente_python_001",
-        "operator_id": "teste_automatizado"
+        "operator_identifier": "teste_automatizado" # CORRIGIDO: de operator_id para operator_identifier
     }
     run_test("validação para telefone", "/validate", "POST", phone_payload_invalid)
 
     # Teste de Validação de CPF (INVÁLIDO: dígito verificador)
     cpf_payload_invalid = {
-        "validation_type": "cpf_cnpj",
-        "data": {
-            "document_number": "11122233344", # CPF com dígito verificador inválido
-            "cclub": "APP-FINANCAS-A" # Adicionado cclub para testar geração de client_entity_id
-        },
+        "type": "cpf_cnpj", # CORRIGIDO: de validation_type para type
+        "data": "11122233344", # CORRIGIDO: dado como string direta
         "client_identifier": "cliente_python_002",
-        "operator_id": "teste_automatizado_cpf"
+        "operator_identifier": "teste_automatizado_cpf", # CORRIGIDO: de operator_id para operator_identifier
+        "cclub": "APP-FINANCAS-A" # Adicionado cclub no nível superior do payload
     }
     run_test("validação para cpf_cnpj", "/validate", "POST", cpf_payload_invalid)
 
     # Teste de Validação de CNPJ (INVÁLIDO: dígito verificador)
     cnpj_payload_invalid = {
-        "validation_type": "cpf_cnpj",
-        "data": {
-            "document_number": "12345678000190", # CNPJ com dígito verificador inválido
-            "cpssoa": "APP-VENDAS-B" # Usando cpssoa para este teste
-        },
+        "type": "cpf_cnpj", # CORRIGIDO: de validation_type para type
+        "data": "12345678000190", # CORRIGIDO: dado como string direta
         "client_identifier": "cliente_python_003",
-        "operator_id": "teste_automatizado_cnpj"
+        "operator_identifier": "teste_automatizado_cnpj", # CORRIGIDO: de operator_id para operator_identifier
+        "cpssoa": "APP-VENDAS-B" # Adicionado cpssoa no nível superior do payload
     }
     run_test("validação para cpf_cnpj", "/validate", "POST", cnpj_payload_invalid)
 
     # Teste de Validação de Email (INVÁLIDO: domínio não aceita e-mail)
     email_payload_invalid = {
-        "validation_type": "email",
-        "data": {
-            "email_address": "test@example.com"
-        },
+        "type": "email", # CORRIGIDO: de validation_type para type
+        "data": "test@example.com", # CORRIGIDO: dado como string direta
         "client_identifier": "cliente_python_004",
-        "operator_id": "teste_automatizado_email"
+        "operator_identifier": "teste_automatizado_email" # CORRIGIDO: de operator_id para operator_identifier
     }
     run_test("validação para email", "/validate", "POST", email_payload_invalid)
 
     # Teste de Validação de Endereço (VÁLIDO)
     address_payload_valid = {
-        "validation_type": "endereco",
-        "data": {
+        "type": "endereco", # CORRIGIDO: de validation_type para type
+        "data": { # Este formato de dicionário para 'data' está correto para 'endereco'
             "cep": "01001000",
             "logradouro": "Praça da Sé",
             "numero": "1",
             "bairro": "Sé"
         },
         "client_identifier": "cliente_python_005",
-        "operator_id": "teste_automatizado_endereco"
+        "operator_identifier": "teste_automatizado_endereco" # CORRIGIDO: de operator_id para operator_identifier
     }
     run_test("validação para endereco", "/validate", "POST", address_payload_valid)
     

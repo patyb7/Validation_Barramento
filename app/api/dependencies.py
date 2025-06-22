@@ -1,77 +1,68 @@
 # app/api/dependencies.py
+from fastapi import Request, HTTPException, status
 import logging
-from fastapi import HTTPException, status, Depends, Request # <--- Adicione Request aqui!
-from typing import Optional
-from fastapi import Header # Adicione Header aqui (se for usar a dependência api_key_auth)
+from typing import Dict, Any
 
-# Importa o DatabaseManager
-from app.database.manager import DatabaseManager
-# Importa ValidationService para type hinting
 from app.services.validation_service import ValidationService
+from app.database.manager import DatabaseManager
+from app.auth.api_key_manager import APIKeyManager
 
 logger = logging.getLogger(__name__)
 
-# --- Definição para DatabaseManager (para health check) ---
-_db_manager_instance: Optional[DatabaseManager] = None
+# Define a constante de mensagem de erro aqui
+VALIDATION_SERVICE_NOT_READY_MESSAGE = "Serviço de validação não está pronto. Tente novamente mais tarde."
 
-async def get_db_manager() -> DatabaseManager:
-    global _db_manager_instance
-    if _db_manager_instance is None:
-        logger.warning("DatabaseManager sendo inicializado via dependência. É recomendado que a inicialização principal ocorra no startup da aplicação.")
-        try:
-            _db_manager_instance = DatabaseManager.get_instance() # Tenta obter a instância singleton já inicializada
-            await _db_manager_instance.connect() # Conecta se ainda não estiver conectado
-            logger.info("DatabaseManager acessado via dependência e conectado.")
-        except Exception as e:
-            logger.critical(f"Falha ao obter/inicializar DatabaseManager na dependência: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Erro interno: Falha ao conectar ao banco de dados."
-            )
-    return _db_manager_instance
-async def get_validation_service_instance(request: Request) -> ValidationService:
+
+def get_validation_service(request: Request) -> ValidationService:
     """
     Dependência que fornece a instância do ValidationService.
-    Assume que validation_service já foi inicializado no startup_event de api_main.py
-    e armazenado em app.state.
+    Assume que o ValidationService foi inicializado no lifespan da aplicação.
     """
-    # Acesse a instância diretamente do estado da aplicação FastAPI
-    validation_service: ValidationService = request.app.state.validation_service
+    val_service: ValidationService = getattr(request.app.state, "validation_service", None)
+    if not val_service:
+        logger.critical("ValidationService não está disponível no estado da aplicação. Lifespan pode ter falhado.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=VALIDATION_SERVICE_NOT_READY_MESSAGE)
+    return val_service
 
-    if validation_service is None:
-        logger.critical("ValidationService não inicializado. Erro de configuração da aplicação. Certifique-se de que o startup da aplicação em api_main.py foi concluído com sucesso.")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="O serviço de validação não está pronto. Tente novamente mais tarde."
-        )
-    return validation_service
-
-VALIDATION_SERVICE_NOT_READY_MESSAGE = "O serviço de validação não está pronto. Tente novamente mais tarde."
-
-# --- Dependência para autenticação de API Key ---
-# AJUSTAR ESTA FUNÇÃO TAMBÉM SE ELA FOR USADA EM ROTAS (o middleware já faz a autenticação global)
-async def api_key_auth(
-    x_api_key: str = Depends(Header(alias="x-api-key")), # Pega a chave do cabeçalho
-    validation_service: ValidationService = Depends(get_validation_service_instance) # Pega a instância do serviço
-) -> None:
+def get_db_manager(request: Request) -> DatabaseManager:
     """
-    Dependência que autentica a API Key.
-    Se a chave não for válida, lança uma HTTPException.
+    Dependência que fornece a instância do DatabaseManager.
+    Assume que o DatabaseManager foi inicializado no lifespan da aplicação.
     """
-    if not x_api_key:
-        logger.error("API Key não fornecida.")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API Key ausente."
-        )
+    db_manager: DatabaseManager = getattr(request.app.state, "db_manager", None)
+    if not db_manager:
+        logger.critical("DatabaseManager não está disponível no estado da aplicação. Lifespan pode ter falhado.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Gerenciador de banco de dados não está pronto.")
+    return db_manager
 
-    # Use o api_key_manager do validation_service para validar a chave
-    app_info = validation_service.api_key_manager.get_app_info(x_api_key)
+def get_api_key_manager(request: Request) -> APIKeyManager:
+    """
+    Dependência que fornece a instância do APIKeyManager.
+    Assume que o APIKeyManager foi inicializado no lifespan da aplicação.
+    """
+    api_key_manager: APIKeyManager = getattr(request.app.state, "api_key_manager", None)
+    if not api_key_manager:
+        logger.critical("APIKeyManager não está disponível no estado da aplicação. Lifespan pode ter falhado.")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Gerenciador de API Keys não está pronto.")
+    return api_key_manager
+
+def get_app_info(request: Request) -> Dict[str, Any]:
+    """
+    Dependência que fornece as informações da aplicação autenticada (app_info).
+    Assume que o APIKeyAuthMiddleware já processou a API Key e armazenou app_info em request.state.
+    """
+    app_info: Dict[str, Any] = getattr(request.state, "app_info", None)
     if not app_info:
-        logger.error(f"Tentativa de acesso com API Key inválida: {x_api_key[:5]}...") # Log parcial da chave
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API Key inválida."
-        )
-    logger.info(f"API Key '{app_info.get('app_name')}' autenticada com sucesso.")
-    return None
+        logger.error("app_info não encontrado no request.state. O middleware de autenticação pode ter falhado ou a rota não é protegida por API Key.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Não autorizado: Informações da aplicação ausentes ou API Key inválida.")
+    return app_info
+def get_api_key(request: Request) -> str:
+    """
+    Dependência que extrai a API Key do cabeçalho da requisição.
+    Assume que o cabeçalho 'x-api-key' é usado para autenticação.
+    """
+    api_key: str = request.headers.get("x-api-key")
+    if not api_key:
+        logger.error("API Key não encontrada no cabeçalho da requisição.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Não autorizado: API Key ausente.")
+    return api_key
