@@ -2,7 +2,7 @@
 import logging
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timezone
-import json
+import json # Importa json para manipular dados JSONB
 import uuid 
 import asyncpg
 import re 
@@ -115,10 +115,25 @@ class ValidationRecordRepository:
                 row = await conn.fetchrow(query_sql, record_id)
                 if row:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para registro {record_id}. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para registro {record_id}. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
 
                     for field in ['deleted_at', 'last_enrichment_attempt_at', 'client_entity_id']: 
                         if field in record_data and record_data[field] is None:
@@ -306,10 +321,24 @@ class ValidationRecordRepository:
                     record_id = record_data.get('id', 'N/A')
                     logger.debug(f"Processando registro ID: {record_id}")
 
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para registro {record_id}. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para registro {record_id}. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
                     
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
@@ -370,10 +399,24 @@ class ValidationRecordRepository:
                 rows = await conn.fetch(query_sql, dado_normalizado, tipo_validacao)
                 for row in rows:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
 
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
@@ -471,10 +514,24 @@ class ValidationRecordRepository:
                 row = await conn.fetchrow(query_sql, *params)
                 if row:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para duplicado. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para duplicado. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
                     
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
@@ -529,10 +586,184 @@ class ValidationRecordRepository:
                 rows = await conn.fetch(query_sql, golden_record_id)
                 for row in rows:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para GR. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para GR. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
+
+                    for field in ['deleted_at', 'last_enrichment_attempt_at']:
+                        if field in record_data and record_data[field] is None:
+                            record_data[field] = None
+                    
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
+                        continue
+
+                    records.append(ValidationRecord(**record_data))
+            logger.info(f"Recuperados {len(records)} registros para Golden Record ID '{golden_record_id}'.")
+            return records
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Erro ao buscar registros por Golden Record ID '{golden_record_id}': {e}", exc_info=True)
+            return [] 
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar registros por Golden Record ID '{golden_record_id}': {e}", exc_info=True)
+            return []
+
+    async def find_duplicate_record(self, dado_normalizado: str, tipo_validacao: str, app_name: str, client_identifier: Optional[str] = None, exclude_record_id: Optional[str] = None) -> Optional[ValidationRecord]:
+        """
+        Busca um registro duplicado baseado em dado normalizado, tipo de validação e nome da aplicação.
+        Exclui registros logicamente deletados e, opcionalmente, um ID de registro específico.
+        """
+        query_sql = """
+        SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
+               origem_validacao, tipo_validacao, app_name, client_identifier,
+               validation_details, data_validacao,
+               regra_negocio_codigo, regra_negocio_descricao,
+               regra_negocio_tipo, regra_negocio_parametros,
+               usuario_criacao, usuario_atualizacao, is_deleted, deleted_at,
+               created_at, updated_at, is_golden_record, golden_record_id,
+               status_qualificacao, last_enrichment_attempt_at,
+               client_entity_id
+        FROM validation_records
+        WHERE dado_normalizado = $1
+          AND tipo_validacao = $2
+          AND app_name = $3
+          AND is_deleted = FALSE
+        """
+        params = [dado_normalizado, tipo_validacao, app_name]
+        param_idx = 4 
+
+        if client_identifier is not None:
+            query_sql += f" AND client_identifier = ${param_idx}"
+            params.append(client_identifier)
+            param_idx += 1
+        else: 
+             query_sql += f" AND (client_identifier IS NULL OR client_identifier = '')"
+
+
+        if exclude_record_id is not None:
+            query_sql += f" AND id != ${param_idx}"
+            params.append(exclude_record_id)
+            param_idx += 1
+
+        query_sql += " LIMIT 1;"
+
+        try:
+            async with self.db_manager.get_connection() as conn:
+                row = await conn.fetchrow(query_sql, *params)
+                if row:
+                    record_data = dict(row)
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para duplicado. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
+                        record_data['validation_details'] = {}
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para duplicado. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
+                    
+                    for field in ['deleted_at', 'last_enrichment_attempt_at']:
+                        if field in record_data and record_data[field] is None:
+                            record_data[field] = None
+                    
+                    if 'golden_record_id' in record_data and record_data['golden_record_id'] is not None:
+                        record_data['golden_record_id'] = str(record_data['golden_record_id'])
+                    else:
+                        record_data['golden_record_id'] = None
+                    
+                    if 'id' in record_data and record_data['id'] is not None:
+                        record_data['id'] = str(record_data['id'])
+                    else:
+                        logger.error(f"Registro sem ID ao tentar instanciar ValidationRecord: {record_data}")
+                        return None 
+
+                    logger.info(f"Duplicidade encontrada para '{dado_normalizado}' (Tipo: {tipo_validacao}, App: {app_name}). ID: {row['id']}")
+                    return ValidationRecord(**record_data)
+                logger.debug(f"Nenhuma duplicidade encontrada para '{dado_normalizado}' (Tipo: {tipo_validacao}, App: {app_name}).")
+                return None
+        except asyncpg.exceptions.PostgresError as e:
+            logger.error(f"Erro ao buscar duplicidade para '{dado_normalizado}': {e}", exc_info=True)
+            return None
+        except Exception as e:
+            logger.error(f"Erro inesperado ao buscar duplicidade para '{dado_normalizado}': {e}", exc_info=True)
+            return None
+
+    async def get_records_by_golden_record_id(self, golden_record_id: str, include_deleted: bool = False) -> List[ValidationRecord]:
+        """
+        Busca todos os registros associados a um Golden Record específico.
+        Útil para recuperar todos os registros que compõem um Golden Record.
+        """
+        query_sql = """
+        SELECT id, dado_original, dado_normalizado, is_valido, mensagem,
+               origem_validacao, tipo_validacao, app_name, client_identifier,
+               validation_details, data_validacao,
+               regra_negocio_codigo, regra_negocio_descricao,
+               regra_negocio_tipo, regra_negocio_parametros,
+               usuario_criacao, usuario_atualizacao, is_deleted, deleted_at,
+               created_at, updated_at, is_golden_record, golden_record_id,
+               status_qualificacao, last_enrichment_attempt_at,
+               client_entity_id
+        FROM validation_records
+        WHERE golden_record_id = $1
+        """
+        if not include_deleted:
+            query_sql += " AND is_deleted = FALSE"
+
+        records: List[ValidationRecord] = []
+        try:
+            async with self.db_manager.get_connection() as conn:
+                rows = await conn.fetch(query_sql, golden_record_id)
+                for row in rows:
+                    record_data = dict(row)
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para GR. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
+                        record_data['validation_details'] = {}
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para GR. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
 
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
@@ -586,10 +817,24 @@ class ValidationRecordRepository:
                 rows = await conn.fetch(query_sql, client_entity_id)
                 for row in rows:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para client entity. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para client entity. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
 
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
@@ -643,10 +888,24 @@ class ValidationRecordRepository:
                 rows = await conn.fetch(query_sql, app_name)
                 for row in rows:
                     record_data = dict(row)
-                    if 'validation_details' in record_data and record_data['validation_details'] is None:
+                    # Convertendo JSONB de string para dict Python
+                    if 'validation_details' in record_data and isinstance(record_data['validation_details'], str):
+                        try:
+                            record_data['validation_details'] = json.loads(record_data['validation_details'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar validation_details para app name. Definindo como vazio.")
+                            record_data['validation_details'] = {}
+                    elif 'validation_details' not in record_data or record_data['validation_details'] is None:
                         record_data['validation_details'] = {}
-                    if 'regra_negocio_parametros' in record_data and record_data['regra_negocio_parametros'] is None:
-                        record_data['regra_negocio_parametros'] = None
+
+                    if 'regra_negocio_parametros' in record_data and isinstance(record_data['regra_negocio_parametros'], str):
+                        try:
+                            record_data['regra_negocio_parametros'] = json.loads(record_data['regra_negocio_parametros'])
+                        except json.JSONDecodeError:
+                            logger.warning(f"Erro ao decodificar regra_negocio_parametros para app name. Definindo como vazio.")
+                            record_data['regra_negocio_parametros'] = {}
+                    elif 'regra_negocio_parametros' not in record_data or record_data['regra_negocio_parametros'] is None:
+                        record_data['regra_negocio_parametros'] = {}
 
                     for field in ['deleted_at', 'last_enrichment_attempt_at']:
                         if field in record_data and record_data[field] is None:
