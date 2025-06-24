@@ -1,0 +1,24 @@
+Separação do Modelo:
+
+Consistência da Estrutura: A pasta app/models é o lugar lógico para modelos de domínio/entidades de banco de dados.
+Reusabilidade: O modelo ValidationRecord é uma representação central dos dados. Ele será usado por repositórios, serviços e, possivelmente, schemas de API. Definindo-o em app/models, ele pode ser importado por qualquer outro módulo, evitando duplicação.
+Clareza: app/database/schema.py foca apenas na definição SQL do esquema e na inicialização do DB, enquanto app/models/validation_record.py foca na representação de dados em Python.
+
+app/models/client_entity.py
+UUID para id: O uso de uuid.uuid4() como default_factory para o id é uma ótima escolha para um identificador único universal, especialmente em sistemas distribuídos, e evita problemas de concorrência com IDs sequenciais de banco de dados se a ClientEntity for criada em diferentes momentos por diferentes serviços.
+main_document_normalized: Campo essencial para identificar a entidade.
+cclub e relationship_type: Oferecem flexibilidade para casos de uso mais complexos onde uma única pessoa pode ter múltiplos "papéis" ou IDs internos.
+IDs dos Golden Records (golden_record_..._id): Esta é a chave para o conceito de "Golden Record da Pessoa", associando os GRs de diferentes tipos de dados à entidade principal.
+Timestamps: created_at e updated_at com timezone.utc são padrões excelentes.
+contributing_apps: Usar um dicionário Dict[str, datetime] para registrar as aplicações que contribuíram para esta entidade é uma funcionalidade poderosa para rastreabilidade e governança de dados.
+update_golden_record_id: Um método de instância prático para manter os IDs dos Golden Records atualizados.
+from_attributes = True: Necessário para conversão de resultados do DB.
+
+app/models/validation_record.py
+Mapeamento Completo: Mapeia bem as colunas da tabela validacoes_gerais.
+Defaults para Timestamps e Flags: id, data_validacao, created_at, updated_at, is_golden_record, is_deleted com default_factory ou default são apropriados.
+JSONB como Dict[str, Any]: Correto para os campos JSON.
+client_entity_id: A adição deste campo é crucial para vincular um registro de validação à sua ClientEntity correspondente. Isso é fundamental para a governança de dados da pessoa.
+Descrição Detalhada dos Campos: Os description nos Fields são excelentes para autocompletar e documentação OpenAPI.
+json_schema_extra com example: Muito bom para a documentação da API.
+populate_by_name = True: Útil se você tiver campos Pydantic com aliases (ex: field_name: str = Field(..., alias="db_column_name")), mas no seu caso, os nomes dos campos Pydantic correspondem aos nomes das colunas do DB, então não é estritamente necessário aqui, mas não causa problemas.

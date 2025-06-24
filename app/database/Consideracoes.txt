@@ -1,0 +1,23 @@
+Ao implantar em um ambiente real, será usado Alembic para gerenciar as migrações de banco de dados.
+
+DatabaseManager implementa o padrão Singleton para o pool de conexões, o que é uma abordagem comum e eficaz para gerenciar recursos de banco de dados em aplicações 
+assíncronas como o FastAPI.
+Singleton Pattern: Garante que apenas um pool de conexões seja criado, otimizando o uso de recursos e evitando problemas de concorrência.
+Gerenciamento de Pool Asyncpg: Utiliza asyncpg.create_pool, pool.acquire(), pool.release() e pool.close() corretamente para um gerenciamento assíncrono robusto das conexões.
+Controle de Ciclo de Vida: Possui métodos connect() e close_pool() explícitos para serem chamados no startup e shutdown da aplicação, garantindo que os recursos sejam alocados e liberados corretamente.
+Tratamento de Erros: Captura exceções na criação do pool e levanta RuntimeError quando o pool não está pronto, orientando o uso correto.
+Logging: O uso de logger.info e logger.critical para registrar eventos importantes e erros é essencial para monitoramento e depuração.
+Context Manager (async with self.pool.acquire()): Embora get_connection retorne a conexão diretamente, o uso pretendido é async with self.db_manager.get_connection() as conn:, para garantir que as conexões
+sejam sempre liberadas de volta ao pool automaticamente.
+
+
+app/database/schema.py
+SQL DDL Integrado: Ter o CREATE_TABLE_SQL diretamente no arquivo é conveniente para desenvolvimento e testes, permitindo a inicialização automática do esquema.
+Índices: A inclusão de índices para tipo_validacao, app_name, data_validacao, dado_original/tipo_validacao/app_name e is_golden_record é excelente para otimização de consultas, especialmente em um barramento com grande volume de dados.
+Trigger updated_at: A função update_updated_at_column e o trigger correspondente são uma ótima prática para gerenciar automaticamente o timestamp da última atualização no banco de dados, reduzindo a carga sobre a aplicação.
+Modelo Pydantic ValidationRecord:
+Mapeia bem o esquema do banco de dados.
+Usa Optional e default_factory para campos que podem ser nulos ou têm valores padrão, o que é correto.
+Dict[str, Any] para campos JSONB (regra_negocio_parametros, validation_details) é a tipagem correta para o Pydantic.
+Config.from_attributes = True (para Pydantic v2) é essencial para facilitar a conversão de resultados de banco de dados (como asyncpg.Record convertido para dict).
+Config.extra = "ignore" é bom para flexibilidade.
