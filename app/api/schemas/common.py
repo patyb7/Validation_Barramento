@@ -1,7 +1,8 @@
-from pydantic import BaseModel, Field, EmailStr, UUID4, validator
+# app/api/schemas/common.py
+from pydantic import BaseModel, Field, EmailStr, UUID4, validator 
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, date, timezone
-import uuid
+import uuid # Necessário para uuid.UUID
 
 # --- Schemas de Requisição (Input Models) ---
 
@@ -232,3 +233,14 @@ class HistoryRecordResponse(BaseModel):
             uuid.UUID: lambda u: str(u)
         }
         json_dumps_mode = 'json'
+
+# NOVO: Modelos para requisições de soft-delete e restore
+class SoftDeleteRequest(BaseModel):
+    record_id: UUID4 = Field(..., description="ID do registro a ser soft-deletado.")
+    reason: Optional[str] = Field(None, description="Motivo para o soft-delete.")
+    operator_id: Optional[str] = Field(None, description="ID do operador que solicitou o soft-delete.")
+
+class RestoreRequest(BaseModel):
+    record_id: UUID4 = Field(..., description="ID do registro a ser restaurado.")
+    reason: Optional[str] = Field(None, description="Motivo para a restauração.")
+    operator_id: Optional[str] = Field(None, description="ID do operador que solicitou a restauração.")

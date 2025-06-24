@@ -134,7 +134,7 @@ class AddressValidator(BaseValidator):
         # e compararia com os dados recebidos.
 
         # CEP fictício que "não corresponde" ou "não é encontrado na base externa"
-        if normalized_address["cep"] == "15945-970" or normalized_address["cep"] == "12345-000":
+        if normalized_address["cep"] == "07273-120" or normalized_address["cep"] == "12345-000":
             details["simulated_consistency"] = False
             message = "Endereço: CEP válido, mas não encontrado na base externa. Validação prossegue, mas pode ser incompleta."
             business_rule_code = AddressRuleCodes.RN_ADDR006

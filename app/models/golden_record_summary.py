@@ -1,3 +1,5 @@
+# app/models/golden_record_sumary
+
 from typing import Optional
 from pydantic import BaseModel, Field, UUID4 # Adicionado UUID4
 from datetime import datetime

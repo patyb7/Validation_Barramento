@@ -26,8 +26,8 @@ class RGValidator(BaseValidator):
         logger.info("RGValidator inicializado.")
         # Simulação de uma base de dados cadastral de RGs
         self.simulated_rg_database = {
-            "346913500": {"name": "Marcos Lucca Danilo Galvão", "status": "ATIVO", "is_active": True},
-            "168074485": {"name": "Lara Amanda Fernandes", "status": "BLOQUEADO", "is_active": False},
+            "123456789": {"name": "Marcos Lucca Danilo Galvão", "status": "ATIVO", "is_active": True},
+            "39143580840": {"name": "Lara Amanda Fernandes", "status": "BLOQUEADO", "is_active": False},
             "111111111": {"name": "RG Sequencial Inválido", "status": None, "is_active": False},
         }
 
@@ -129,7 +129,7 @@ class RGValidator(BaseValidator):
             
         return self._format_result(
             is_valid=is_valid_final,
-            dado_original=rg_number, # Adicionado dado_original
+            dado_original=rg_number,
             dado_normalizado=normalized_rg,
             mensagem=validation_message,
             details=details,

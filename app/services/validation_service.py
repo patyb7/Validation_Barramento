@@ -1,21 +1,19 @@
 # app/services/validation_service.py
 
 import logging
-from typing import Dict, Any, Optional, List, Union
+import asyncpg
+from typing import Optional, Dict, Any, List, Union
 from datetime import datetime, timezone
 import uuid # Para manipulação de UUIDs
 import json # Para json.dumps
-from pydantic import BaseModel # Adicionado: Importar BaseModel
-
-# Importações de dependências e modelos
+from pydantic import BaseModel
 from app.auth.api_key_manager import APIKeyManager
 from app.database.repositories.validation_record_repository import ValidationRecordRepository
 from app.database.repositories.log_repository import LogRepository, LogEntry
+from app.database.repositories.qualification_repository import QualificationRepository
 from app.rules.decision_rules import DecisionRules
 from app.models.validation_record import ValidationRecord
 from app.api.schemas.common import UniversalValidationRequest, ValidationResponse, HistoryRecordResponse
-
-# Importe os validadores reais
 from app.rules.phone.validator import PhoneValidator
 from app.rules.address.cep.validator import CEPValidator
 from app.rules.email.validator import EmailValidator
@@ -25,8 +23,7 @@ from app.rules.pessoa.nome.validator import NomeValidator
 from app.rules.pessoa.genero.validator import SexoValidator
 from app.rules.pessoa.rg.validator import RGValidator
 from app.rules.pessoa.data_nascimento.validator import DataNascimentoValidator
-# Importe o novo validador composto com o nome de classe corrigido
-from app.rules.pessoa.composite_validator import PessoaFullValidacao 
+from app.rules.pessoa.composite_validator import PessoaFullValidacao
 
 # CONSTANTES DE MENSAGEM (para consistência)
 API_KEY_INVALID_MESSAGE = "API Key inválida ou não autorizada."
@@ -44,6 +41,7 @@ class ValidationService:
         self,
         api_key_manager: APIKeyManager,
         repo: ValidationRecordRepository,
+        qualification_repo: QualificationRepository, # NOVO: Injetar QualificationRepository
         decision_rules: DecisionRules,
         phone_validator: PhoneValidator,
         cep_validator: CEPValidator,
@@ -58,9 +56,14 @@ class ValidationService:
     ):
         self.api_key_manager = api_key_manager
         self.repo = repo
-        self.decision_rules = decision_rules
+        self.qualification_repo = qualification_repo # Armazenar o QualificationRepository
+        # NOVO: A instância de DecisionRules agora é criada AQUI
+        # e recebe ambos os repositórios (validation_repo e qualification_repo).
+        self.decision_rules = DecisionRules(
+            validation_repo=repo,
+            qualification_repo=qualification_repo
+        )
         self.log_repo = log_repo
-
         # Inicialize o PessoaFullValidacao aqui, passando as dependências
         self.pessoa_full_validacao_validator = PessoaFullValidacao( 
             phone_validator=phone_validator,
@@ -73,7 +76,6 @@ class ValidationService:
             rg_validator=rg_validator,
             data_nascimento_validator=data_nascimento_validator
         )
-
         # Dicionário de validadores, mapeando 'type' (da requisição) para a instância do validador
         self.validators = {
             "telefone": phone_validator,
@@ -95,7 +97,6 @@ class ValidationService:
         """
         app_name_log = app_info.get('app_name', 'Desconhecido')
         operator_id_log = request.operator_id or app_name_log
-
         if not app_info or not app_info.get("is_active"):
             logger.warning(f"Tentativa de validação com API Key inválida ou inativa: {app_name_log}...")
             await self.log_repo.add_log_entry(
@@ -157,44 +158,53 @@ class ValidationService:
                 regra_negocio_parametros=validation_result.get("business_rule_applied", {}).get("parameters"),
                 usuario_criacao=operator_id_log,
                 usuario_atualizacao=operator_id_log,
-                is_golden_record=False,
-                golden_record_id=None,
-                status_qualificacao="PENDING",
+                is_golden_record=False, # Definido inicialmente como False, DecisionRules irá atualizar
+                golden_record_id=None, # Definido inicialmente como None, DecisionRules irá atualizar
+                status_qualificacao="PENDING_DECISION", # NOVO: Status inicial para qualificação
                 last_enrichment_attempt_at=None,
-                client_entity_id=request.client_identifier
+                client_entity_id=request.client_identifier # Ou extraído de request.data se houver um campo 'cclub'
             )
             
             persisted_record = await self.repo.create_record(record)
             if not persisted_record:
                 raise Exception("Falha ao persistir o registro de validação inicial.")
 
+            # Após a persistência, aplica as regras de decisão para qualificação
+            # A instância de `decision_rules` já tem `validation_repo` e `qualification_repo`
             actions_summary = await self.decision_rules.apply_rules(persisted_record, app_info)
+
+            # Recarrega o registro para ter os campos atualizados pelo decision_rules
+            updated_persisted_record = await self.repo.get_record_by_id(persisted_record.id)
+            if not updated_persisted_record:
+                logger.error(f"Não foi possível recarregar o registro {persisted_record.id} após aplicação das regras de decisão.")
+                # Continua com o record original, mas pode haver inconsistência nos logs/resposta
+                updated_persisted_record = persisted_record 
 
             # A resposta deve ser um dicionário que FastAPI pode converter para ValidationResponse
             response_data = ValidationResponse(
-                id=persisted_record.id,
-                dado_original=persisted_record.dado_original,
-                dado_normalizado=persisted_record.dado_normalizado,
-                is_valido=persisted_record.is_valido,
-                mensagem=persisted_record.mensagem,
-                origem_validacao=persisted_record.origem_validacao,
-                tipo_validacao=persisted_record.tipo_validacao,
-                app_name=persisted_record.app_name,
-                client_identifier=persisted_record.client_identifier,
-                short_id_alias=persisted_record.short_id_alias,
-                validation_details=persisted_record.validation_details,
-                data_validacao=persisted_record.data_validacao,
-                regra_negocio_codigo=persisted_record.regra_negocio_codigo,
-                regra_negocio_descricao=persisted_record.regra_negocio_descricao,
-                regra_negocio_tipo=persisted_record.regra_negocio_tipo,
-                regra_negocio_parametros=persisted_record.regra_negocio_parametros,
-                is_golden_record=persisted_record.is_golden_record,
-                golden_record_id=persisted_record.golden_record_id,
-                status_qualificacao=persisted_record.status_qualificacao,
-                last_enrichment_attempt_at=persisted_record.last_enrichment_attempt_at,
-                client_entity_id=persisted_record.client_entity_id,
+                id=updated_persisted_record.id,
+                dado_original=updated_persisted_record.dado_original,
+                dado_normalizado=updated_persisted_record.dado_normalizado,
+                is_valido=updated_persisted_record.is_valido,
+                mensagem=updated_persisted_record.mensagem,
+                origem_validacao=updated_persisted_record.origem_validacao,
+                tipo_validacao=updated_persisted_record.tipo_validacao,
+                app_name=updated_persisted_record.app_name,
+                client_identifier=updated_persisted_record.client_identifier,
+                short_id_alias=updated_persisted_record.short_id_alias,
+                validation_details=updated_persisted_record.validation_details,
+                data_validacao=updated_persisted_record.data_validacao,
+                regra_negocio_codigo=updated_persisted_record.regra_negocio_codigo,
+                regra_negocio_descricao=updated_persisted_record.regra_negocio_descricao,
+                regra_negocio_tipo=updated_persisted_record.regra_negocio_tipo,
+                regra_negocio_parametros=updated_persisted_record.regra_negocio_parametros,
+                is_golden_record=updated_persisted_record.is_golden_record,
+                golden_record_id=updated_persisted_record.golden_record_id,
+                status_qualificacao=updated_persisted_record.status_qualificacao,
+                last_enrichment_attempt_at=updated_persisted_record.last_enrichment_attempt_at,
+                client_entity_id=updated_persisted_record.client_entity_id,
                 status="success",
-                message="Validação concluída com sucesso.",
+                message="Validação e qualificação concluídas com sucesso.", # Mensagem atualizada
                 status_code=200
             ).model_dump(mode='json') # Converter para dicionário para retorno consistente
 
@@ -205,21 +215,22 @@ class ValidationService:
                     usuario_operador=operator_id_log,
                     detalhes_evento_json={
                         "validation_type": request.validation_type,
-                        "dado_normalizado": persisted_record.dado_normalizado,
-                        "is_valid": persisted_record.is_valido,
-                        "record_id": str(persisted_record.id) if persisted_record.id else None,
-                        "actions_summary": actions_summary
+                        "dado_normalizado": updated_persisted_record.dado_normalizado,
+                        "is_valid": updated_persisted_record.is_valido,
+                        "record_id": str(updated_persisted_record.id) if updated_persisted_record.id else None,
+                        "actions_summary": actions_summary,
+                        "final_status_qualificacao": updated_persisted_record.status_qualificacao # Novo: Logar o status final de qualificação
                     },
                     status_operacao="SUCESSO",
-                    mensagem_log=f"Validação do tipo '{request.validation_type}' para '{persisted_record.dado_normalizado}' concluída. Válido: {persisted_record.is_valido}. Record ID: {persisted_record.id}",
-                    client_entity_id_afetado=persisted_record.client_entity_id 
+                    mensagem_log=f"Validação do tipo '{request.validation_type}' para '{updated_persisted_record.dado_normalizado}' concluída. Válido: {updated_persisted_record.is_valido}. Status Qualificação: {updated_persisted_record.status_qualificacao}. Record ID: {updated_persisted_record.id}",
+                    client_entity_id_afetado=updated_persisted_record.client_entity_id 
                 )
             )
 
             return response_data
 
         except Exception as e:
-            logger.error(f"Erro no ValidationService.validate_data para tipo 'telefone': {e}", exc_info=True)
+            logger.error(f"Erro no ValidationService.validate_data para tipo '{request.validation_type}': {e}", exc_info=True)
             # Tenta converter request.data para JSON para o log de erro, se possível
             error_data_for_log = request.data
             if hasattr(request.data, 'model_dump'):

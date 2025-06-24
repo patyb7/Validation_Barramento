@@ -2,43 +2,44 @@
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, status, HTTPException, Depends
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
+import uuid
 
-# Importações organizadas
+# Importações dos seus módulos
 from app.config.settings import settings
-from app.database.manager import DatabaseManager
-from app.database.repositories.validation_record_repository import ValidationRecordRepository
-from app.database.schema import initialize_database 
 from app.auth.api_key_manager import APIKeyManager
-from app.rules.decision_rules import DecisionRules
+from app.database.manager import DatabaseManager
+from app.database.schema import initialize_database
+from app.database.repositories.validation_record_repository import ValidationRecordRepository
+from app.database.repositories.log_repository import LogRepository
+from app.database.repositories.qualification_repository import QualificationRepository
 from app.services.validation_service import ValidationService
+from app.rules.decision_rules import DecisionRules
+# As schemas são importadas pelos routers, mas mantidas aqui para type hinting nos handlers de exceção
+from app.api.schemas.common import UniversalValidationRequest, ValidationResponse, HistoryRecordResponse, SoftDeleteRequest, RestoreRequest
+from app.models.log_entry import LogEntry
 
-# Importação dos validadores existentes
+# Importar todos os validadores específicos
 from app.rules.phone.validator import PhoneValidator
-from app.rules.address.cep.validator import CEPValidator 
+from app.rules.address.cep.validator import CEPValidator
 from app.rules.email.validator import EmailValidator
 from app.rules.document.cpf_cnpj.validator import CpfCnpjValidator
 from app.rules.address.address_validator import AddressValidator
-
-# Importação dos validadores de pessoa
 from app.rules.pessoa.nome.validator import NomeValidator
 from app.rules.pessoa.genero.validator import SexoValidator
-from app.rules.pessoa.rg.validator import RGValidator 
+from app.rules.pessoa.rg.validator import RGValidator
 from app.rules.pessoa.data_nascimento.validator import DataNascimentoValidator
+from app.rules.pessoa.composite_validator import PessoaFullValidacao
 
-# Importa o LogRepository e LogEntry
-from app.database.repositories.log_repository import LogRepository
-from app.models.log_entry import LogEntry
-
-# --- IMPORTAR OS APIRouters DE CADA ARQUIVO DE ROTA ---
+# Importar os APIRouters
 from app.api.routers.health import router as health_router
 from app.api.routers.history import router as history_router
-from app.api.routers.validation import router as validation_router
+from app.api.routers.validation import router as validation_router # Importa o router de validação
 
-# --- Configuração de Logging Centralizada ---
+# Configuração de logging centralizada
 logging.basicConfig(
     level=settings.get_log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -49,75 +50,120 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Gerenciador de Ciclo de Vida (Lifespan) Robusto ---
+# Instâncias globais que serão inicializadas no lifespan
+db_manager: DatabaseManager
+api_key_manager: APIKeyManager
+validation_repo: ValidationRecordRepository
+log_repo: LogRepository
+qualification_repo: QualificationRepository
+decision_rules: DecisionRules
+validation_service: ValidationService
+
+# Instâncias dos validadores específicos
+phone_validator: PhoneValidator
+cep_validator: CEPValidator
+email_validator: EmailValidator
+cpf_cnpj_validator: CpfCnpjValidator
+address_validator: AddressValidator
+nome_validator: NomeValidator
+sexo_validator: SexoValidator
+rg_validator: RGValidator
+data_nascimento_validator: DataNascimentoValidator
+pessoa_full_validacao_validator: PessoaFullValidacao
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Gerencia o ciclo de vida da aplicação.
-    Inicializa recursos na partida e os libera de forma segura no desligamento.
+    Função de gerenciamento do ciclo de vida da aplicação (startup e shutdown).
+    Inicializa o banco de dados e as dependências globais.
     """
-    logger.info("Fase de STARTUP do Lifespan iniciada... (main.py)")
+    global db_manager, api_key_manager, validation_repo, log_repo, qualification_repo, decision_rules, validation_service
+    global phone_validator, cep_validator, email_validator, cpf_cnpj_validator, address_validator, nome_validator, sexo_validator, rg_validator, data_nascimento_validator, pessoa_full_validacao_validator
+
+    logger.info("Fase de STARTUP do Lifespan iniciada... (main.py)") # Log alterado para main.py
     
-    db_manager = DatabaseManager.get_instance() 
+    # 1. Inicializa o DatabaseManager
+    db_manager = DatabaseManager.get_instance()
+    await db_manager.connect(settings.DATABASE_URL)
+    await initialize_database(db_manager)
+    logger.info("Schema do banco de dados inicializado com sucesso.")
+
+    # 2. Inicializa os Repositórios
+    validation_repo = ValidationRecordRepository(db_manager)
+    log_repo = LogRepository(db_manager)
+    qualification_repo = QualificationRepository(db_manager)
+
+    # 3. Inicializa o APIKeyManager
+    api_key_manager = APIKeyManager(settings.API_KEYS_FILE)
+
+    # 4. Inicializa os Validadores Específicos
+    phone_validator = PhoneValidator()
+    cep_validator = CEPValidator()
+    email_validator = EmailValidator()
+    cpf_cnpj_validator = CpfCnpjValidator()
+    address_validator = AddressValidator(cep_validator=cep_validator)
+    nome_validator = NomeValidator()
+    sexo_validator = SexoValidator()
+    rg_validator = RGValidator()
+    data_nascimento_validator = DataNascimentoValidator()
     
-    try:
-        await db_manager.connect(settings.DATABASE_URL) 
+    # 5. Inicializa o Validador Composto (PessoaFullValidacao)
+    pessoa_full_validacao_validator = PessoaFullValidacao(
+        phone_validator=phone_validator,
+        cep_validator=cep_validator,
+        email_validator=email_validator,
+        cpf_cnpj_validator=cpf_cnpj_validator,
+        address_validator=address_validator,
+        nome_validator=nome_validator,
+        sexo_validator=sexo_validator,
+        rg_validator=rg_validator,
+        data_nascimento_validator=data_nascimento_validator
+    )
 
-        await initialize_database(db_manager) 
-        logger.info("Schema do banco de dados inicializado com sucesso.")
+    # 6. Inicializa as Regras de Decisão, passando os repositórios necessários
+    decision_rules = DecisionRules(
+        validation_repo=validation_repo, 
+        qualification_repo=qualification_repo
+    )
 
-        validation_repo = ValidationRecordRepository(db_manager) 
-        log_repo = LogRepository(db_manager) 
-        
-        api_key_manager = APIKeyManager(settings.API_KEYS_FILE) 
-        
-        decision_rules = DecisionRules(repo=validation_repo) 
+    # 7. Inicializa o ValidationService com todas as dependências
+    validation_service = ValidationService(
+        api_key_manager=api_key_manager,
+        repo=validation_repo,
+        qualification_repo=qualification_repo,
+        decision_rules=decision_rules,
+        phone_validator=phone_validator,
+        cep_validator=cep_validator,
+        email_validator=email_validator,
+        cpf_cnpj_validator=cpf_cnpj_validator,
+        address_validator=address_validator,
+        nome_validator=nome_validator,
+        sexo_validator=sexo_validator,
+        rg_validator=rg_validator,
+        data_nascimento_validator=data_nascimento_validator,
+        log_repo=log_repo
+    )
+    
+    # Armazena as instâncias no estado da aplicação para acesso via Depends
+    app.state.db_manager = db_manager
+    app.state.validation_service = validation_service
+    app.state.api_key_manager = api_key_manager
+    app.state.log_repo = log_repo
+    app.state.qualification_repo = qualification_repo
 
-        phone_validator = PhoneValidator()
-        cep_validator = CEPValidator()
-        email_validator = EmailValidator()
-        cpf_cnpj_validator = CpfCnpjValidator()
-        
-        address_validator = AddressValidator(cep_validator=cep_validator)
-        
-        nome_validator = NomeValidator()
-        sexo_validator = SexoValidator()
-        rg_validator = RGValidator() 
-        data_nascimento_validator = DataNascimentoValidator()
-        
-        validation_service = ValidationService(
-            api_key_manager=api_key_manager,
-            repo=validation_repo, 
-            decision_rules=decision_rules,
-            phone_validator=phone_validator,
-            cep_validator=cep_validator,
-            email_validator=email_validator,
-            cpf_cnpj_validator=cpf_cnpj_validator,
-            address_validator=address_validator,
-            nome_validator=nome_validator,
-            sexo_validator=sexo_validator,
-            rg_validator=rg_validator, 
-            data_nascimento_validator=data_nascimento_validator,
-            log_repo=log_repo 
-        )
+    logger.info("Fase de STARTUP do Lifespan concluída. Aplicação pronta para receber requisições.")
+    
+    yield
 
-        app.state.db_manager = db_manager
-        app.state.validation_service = validation_service
-        app.state.api_key_manager = api_key_manager
-        app.state.log_repo = log_repo 
-
-        logger.info("Fase de STARTUP do Lifespan concluída. Aplicação pronta para receber requisições.")
-        
-        yield 
-
-    finally:
-        logger.info("Fase de SHUTDOWN do Lifespan iniciada...")
-        
-        if getattr(app.state, 'db_manager', None) and app.state.db_manager.is_connected:
-            await app.state.db_manager.close()
-            logger.info("Pool de conexões com o banco de dados fechado.")
+    # Fase de SHUTDOWN
+    logger.info("Fase de SHUTDOWN do Lifespan iniciada...")
+    
+    if hasattr(app.state, 'db_manager') and app.state.db_manager.is_connected:
+        await app.state.db_manager.close()
+        logger.info("Pool de conexões com o banco de dados fechado.")
             
-        logger.info("Fase de SHUTDOWN do Lifespan concluída.")
+    logger.info("Fase de SHUTDOWN do Lifespan concluída.")
 
 # --- Instância da Aplicação FastAPI ---
 app = FastAPI(
@@ -132,6 +178,7 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         logger.debug(f"Requisição recebida no middleware para o caminho: {request.url.path} (de {request.client.host}:{request.client.port})")
         
+        # Rotas públicas que não requerem autenticação
         if request.url.path.startswith(("/docs", "/openapi.json", "/redoc", "/api/v1/health")): 
             return await call_next(request)
 
@@ -167,8 +214,10 @@ class APIKeyAuthMiddleware(BaseHTTPMiddleware):
         
         logger.info(f"API Key '{request.state.auth_app_name}' autenticada com sucesso para o caminho '{request.url.path}'.")
 
-        if request.url.path.startswith("/api/v1/records/") and ("soft-delete" in request.url.path or "restore" in request.url.path):
-             if not request.state.can_delete_records:
+        # Verifica permissões para operações específicas (soft-delete/restore)
+        if request.url.path.startswith("/api/v1/records/soft-delete") or \
+           request.url.path.startswith("/api/v1/records/restore"):
+            if not request.state.can_delete_records:
                 logger.warning(f"Aplicação '{request.state.auth_app_name}' sem permissão para operação de delete/restore em {request.url.path}.")
                 return JSONResponse(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -187,18 +236,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     log_repo = getattr(request.app.state, 'log_repo', None)
     app_name = getattr(request.state, 'auth_app_name', "Desconhecido")
     
-    # Tentar extrair client_identifier do corpo da requisição se for uma requisição de validação
     client_entity_id_for_log = None
-    if request.url.path == "/api/v1/validate" and request.method == "POST":
-        try:
-            # Não podemos await request.json() aqui, pois o corpo já pode ter sido lido.
-            # A forma mais robusta seria pegar do request.state.request_data se fosse armazenado
-            # consistentemente pelo middleware ou endpoint antes do erro.
-            # Por simplicidade e para evitar re-leitura do corpo, vamos deixar como None aqui
-            # para HttpExceptions que não vêm diretamente do service.
-            pass
-        except Exception:
-            pass # Ignorar erro ao tentar ler corpo da requisição
+    if hasattr(request.state, 'request_data') and isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest, UniversalValidationRequest)):
+        client_entity_id_for_log = getattr(request.state.request_data, 'client_identifier', None)
+        if isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest)) and client_entity_id_for_log is None:
+            client_entity_id_for_log = getattr(request.state.request_data, 'operator_id', None)
+
 
     if log_repo:
         try:
@@ -206,11 +249,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 LogEntry(
                     tipo_evento="ERRO_HTTP",
                     app_origem=app_name,
-                    usuario_operador=getattr(request.state, 'operator_id', "N/A"), # Tenta pegar operator_id do state
+                    usuario_operador=getattr(request.state, 'operator_id', "N/A"),
                     detalhes_evento_json={"path": request.url.path, "status_code": exc.status_code, "detail": exc.detail},
                     status_operacao="FALHA",
                     mensagem_log=f"Erro HTTP {exc.status_code}: {exc.detail}",
-                    client_entity_id_afetado=client_entity_id_for_log # Passar o ID da entidade se disponível
+                    client_entity_id_afetado=client_entity_id_for_log
                 )
             )
         except Exception as log_exc:
@@ -230,10 +273,11 @@ async def general_exception_handler(request: Request, exc: Exception):
     app_name = getattr(request.state, 'auth_app_name', "Desconhecido")
     
     client_entity_id_for_log = None
-    # Tenta obter o client_entity_id do request.state se ele foi preenchido anteriormente
-    # por um middleware ou endpoint antes do erro.
-    if hasattr(request.state, 'request_data') and hasattr(request.state.request_data, 'client_identifier'):
-        client_entity_id_for_log = request.state.request_data.client_identifier
+    if hasattr(request.state, 'request_data') and isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest, UniversalValidationRequest)):
+        client_entity_id_for_log = getattr(request.state.request_data, 'client_identifier', None)
+        if isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest)) and client_entity_id_for_log is None:
+            client_entity_id_for_log = getattr(request.state.request_data, 'operator_id', None)
+
 
     if log_repo:
         try:
@@ -241,11 +285,11 @@ async def general_exception_handler(request: Request, exc: Exception):
                 LogEntry(
                     tipo_evento="ERRO_INTERNO_FATAL",
                     app_origem=app_name,
-                    usuario_operador=getattr(request.state, 'operator_id', "N/A"), # Tenta pegar operator_id do state
+                    usuario_operador=getattr(request.state, 'operator_id', "N/A"),
                     detalhes_evento_json={"path": request.url.path, "exception_type": type(exc).__name__, "exception_message": str(exc), "traceback": traceback.format_exc()},
                     status_operacao="FALHA",
                     mensagem_log=f"Erro interno fatal: {str(exc)}",
-                    client_entity_id_afetado=client_entity_id_for_log # Passar o ID da entidade se disponível
+                    client_entity_id_afetado=client_entity_id_for_log
                 )
             )
         except Exception as log_exc:
@@ -257,19 +301,28 @@ async def general_exception_handler(request: Request, exc: Exception):
     )
 
 # --- Rotas da API ---
+
+# Removidas as definições diretas de endpoints, este arquivo agora apenas inclui os routers.
+# As definições desses endpoints estão agora nos seus respectivos arquivos de router (health.py, history.py, validation.py).
+
 @app.get("/", summary="Raiz da API", tags=["Status"])
 async def root():
-    """Endpoint raiz para verificar se a API está de pé."""
     return {"message": "Bem-vindo ao Barramento de Validação de Dados. Acesse /docs para a documentação da API."}
 
-app.include_router(health_router, prefix="/api/v1") 
-app.include_router(history_router, prefix="/api/v1") 
+# Incluindo os routers para que suas rotas sejam registradas
+from app.api.routers.health import router as health_router
+from app.api.routers.history import router as history_router
+from app.api.routers.validation import router as validation_router
+
+app.include_router(health_router, prefix="/api/v1")
+app.include_router(history_router, prefix="/api/v1")
 app.include_router(validation_router, prefix="/api/v1")
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", 
+        "main:app", # Referência alterada para main.py na raiz
         host="0.0.0.0", 
         port=8001, 
         reload=True,
