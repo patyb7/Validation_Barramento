@@ -1,144 +1,71 @@
+# app/routers/history.py
 # app/api/routers/history.py
+
 import logging
-from typing import Optional, Dict, Any, List
-from datetime import datetime
-import uuid # Importar uuid para tipo UUID
-
-from fastapi import APIRouter, Request, HTTPException, status, Query, Depends
-
-# Importa os modelos Pydantic e a função de tratamento de erro do arquivo comum
-from app.api.schemas.common import HistoryRecordResponse, HistoryResponse, handle_service_response_error
-
-# IMPORTAR A FUNÇÃO DE DEPENDÊNCIA E A MENSAGEM DE ERRO
-from app.api.dependencies import get_validation_service, VALIDATION_SERVICE_NOT_READY_MESSAGE, get_app_info 
-from app.services.validation_service import ValidationService # Para type hinting
-
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, status
+from typing import List, Dict, Any
+from app.api.schemas.common import HistoryRecordResponse # Importa o modelo de resposta para histórico
+from app.api.dependencies import get_validation_service, get_api_key_info # Importa dependências
+from app.services.validation_service import ValidationService
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["History & Records Management"])
+router = APIRouter()
 
-# --- Endpoint de Histórico ---
 @router.get(
-    "/history", 
-    response_model=HistoryResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Obtém o histórico das últimas validações",
-    description="Retorna uma lista dos últimos N registros de validação. Por padrão, não inclui registros deletados logicamente. Use `include_deleted=true` para visualizá-los."
+    "/history",
+    response_model=Dict[str, Any], # Pode ser HistoryResponse ou um Dict[str, Any] conforme a necessidade
+    summary="Obter Histórico de Validações",
+    tags=["Histórico"]
 )
-async def get_history_endpoint(
-    request: Request,
-    val_service: ValidationService = Depends(get_validation_service),
-    app_info: Dict[str, Any] = Depends(get_app_info), # Injeta as informações da aplicação
-    limit: int = Query(5, ge=1, le=100, description="Número máximo de registros a serem retornados (1-100)."),
-    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados.")
-):
+async def get_validation_history_endpoint(
+    request: Request, # Adicionado Request para acessar app.state
+    limit: int = Query(10, ge=1, le=100, description="Número máximo de registros a serem retornados."),
+    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados."),
+    validation_service: ValidationService = Depends(get_validation_service)
+) -> Dict[str, Any]:
     """
-    Obtém o histórico de validações registradas no sistema.
+    Retorna o histórico de validações para a aplicação associada à API Key.
+    Acesso restrito apenas a API Keys com permissão.
     """
-    if val_service is None: 
-        logger.critical("ValidationService não inicializado no momento da requisição /history. (Erro de inicialização da dependência)")
+    api_key_str = request.headers.get("x-api-key") # Obtém a API Key do header
+    
+    if not api_key_str:
+        logger.warning("Tentativa de acesso ao histórico sem API Key.")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key ausente."
         )
 
-    # CORREÇÃO AQUI: Passar app_info em vez de api_key
-    history_result = await val_service.get_validation_history(
-        app_info=app_info,
-        limit=limit,
-        include_deleted=include_deleted
-    )
-
-    if history_result.get("status") == "error":
-        handle_service_response_error(history_result) 
-
-    return HistoryResponse(**history_result)
-
-# --- Endpoint de Soft Delete ---
-@router.put(
-    "/records/{record_id}/soft-delete", 
-    status_code=status.HTTP_200_OK,
-    summary="Deleta logicamente um registro de validação",
-    description="Marca um registro de validação como 'deletado' sem removê-lo fisicamente do banco de dados. Requer autenticação por API Key (apenas para usuários MDM, via configuração de permissões na API Key)."
-)
-async def soft_delete_record_endpoint(
-    request: Request,
-    record_id: uuid.UUID, # Usar uuid.UUID como tipo
-    val_service: ValidationService = Depends(get_validation_service),
-    app_info: Dict[str, Any] = Depends(get_app_info) # Injeta as informações da aplicação
-):
-    """
-    Marca um registro de validação como logicamente deletado.
-    """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /records/{record_id}/soft-delete. (Erro de inicialização da dependência)")
+    # A validação da API Key e obtenção do app_info já é feita no middleware.
+    # O app_info está disponível em request.state.app_info
+    app_info = request.state.app_info if hasattr(request.state, 'app_info') else None
+    
+    if not app_info or not app_info.get("is_active"):
+        logger.warning(f"Acesso não autorizado ao histórico com API Key inválida ou inativa.")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key inválida ou não autorizada."
         )
 
-    # CORREÇÃO AQUI: Passar app_info em vez de api_key
-    result = await val_service.soft_delete_record(app_info, record_id)
-    if result.get("status") in ["error", "failed"]:
-        handle_service_response_error(result) 
-    return {"message": result.get("message")}
-
-# --- Endpoint de Restore ---
-@router.put(
-    "/records/{record_id}/restore", 
-    status_code=status.HTTP_200_OK,
-    summary="Restaura um registro de validação deletado logicamente",
-    description="Reverte a operação de soft delete para um registro, tornando-o ativo novamente. Requer autenticação por API Key (apenas para usuários MDM, via configuração de permissões na API Key)."
-)
-async def restore_record_endpoint(
-    request: Request,
-    record_id: uuid.UUID, # Usar uuid.UUID como tipo
-    val_service: ValidationService = Depends(get_validation_service),
-    app_info: Dict[str, Any] = Depends(get_app_info) # Injeta as informações da aplicação
-):
-    """
-    Restaura um registro de validação que foi logicamente deletado.
-    """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /records/{record_id}/restore. (Erro de inicialização da dependência)")
+    # Verifica se a aplicação tem permissão para ler histórico.
+    # Assumimos que 'get_api_key_info' já retorna essa permissão.
+    # Ou podemos adicionar um campo 'can_read_history' na api_keys.json
+    if not app_info.get("can_read_history", True): # Assume True por padrão se não definido
+        logger.warning(f"Aplicação '{app_info.get('app_name')}' sem permissão para acessar o histórico.")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissão negada: Sua API Key não tem privilégios para acessar o histórico."
         )
 
-    # CORREÇÃO AQUI: Passar app_info em vez de api_key
-    result = await val_service.restore_record(app_info, record_id)
-    if result.get("status") in ["error", "failed"]:
-        handle_service_response_error(result) 
-    return {"message": result.get("message")}
-
-# --- Endpoint de Detalhes do Registro ---
-@router.get(
-    "/records/{record_id}",
-    response_model=HistoryRecordResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Obtém os detalhes de um registro de validação",
-    description="Retorna os detalhes de um registro específico de validação, incluindo informações sobre a validação e o usuário que a realizou."
-)
-async def get_record_details_endpoint(
-    request: Request,
-    record_id: uuid.UUID, # Usar uuid.UUID como tipo
-    val_service: ValidationService = Depends(get_validation_service),
-    app_info: Dict[str, Any] = Depends(get_app_info) # Injeta as informações da aplicação
-):
-    """
-    Obtém os detalhes de um registro de validação específico.
-    """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /records/{record_id}. (Erro de inicialização da dependência)")
+    try:
+        # Chama o serviço para obter o histórico
+        history_response = await validation_service.get_validation_history(api_key_str, limit, include_deleted)
+        return history_response
+    except HTTPException as e:
+        raise e # Re-lança exceções HTTP específicas do serviço
+    except Exception as e:
+        logger.error(f"Erro inesperado ao obter histórico de validações: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
+            detail="Ocorreu um erro inesperado ao recuperar o histórico."
         )
-
-    # CORREÇÃO AQUI: Passar app_info em vez de api_key
-    record_details = await val_service.get_record_details(app_info, record_id)
-    if record_details.get("status") == "error":
-        handle_service_response_error(record_details)
-
-    return HistoryRecordResponse(**record_details)

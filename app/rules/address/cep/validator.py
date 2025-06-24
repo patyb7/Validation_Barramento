@@ -1,4 +1,5 @@
-# app/rules/address/cep/validator.py
+# app/rules/address/cep/vaildator.py
+
 import re
 import logging
 import asyncio
@@ -14,7 +15,7 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
     Realiza validação de formato, verifica padrões comuns inválidos (sequenciais/repetidos)
     e simula consulta a uma API externa (como ViaCEP) para validação e enriquecimento.
     """
-    # Códigos de Regra específicos para validação de CEP (MOVIDOS PARA CÁ)
+    # Códigos de Regra específicos para validação de CEP
     VAL_CEP001 = "VAL_CEP001" # CEP válido e encontrado (ex: ViaCEP)
     VAL_CEP002 = "VAL_CEP002" # CEP válido, mas não encontrado na API externa
     VAL_CEP003 = "VAL_CEP003" # Input vazio ou tipo inválido
@@ -40,7 +41,7 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
             subset = cleaned_cep[i:i+4]
             if all(d.isdigit() for d in subset):
                 s0, s1, s2, s3 = int(subset[0]), int(subset[1]), int(subset[2]), int(subset[3])
-                # Correção da lógica de sequência: s2+1==s3 e s2-1==s3
+                # Verifica sequências crescentes ou decrescentes
                 if (s0 + 1 == s1 and s1 + 1 == s2 and s2 + 1 == s3) or \
                    (s0 - 1 == s1 and s1 - 1 == s2 and s2 - 1 == s3):
                     return True
@@ -100,7 +101,7 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
 
         return response_data
 
-    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # <--- MÉTODO PADRONIZADO 'validate'
+    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # MÉTODO PADRONIZADO 'validate'
         """
         Valida um CEP (Código de Endereçamento Postal).
 
@@ -123,34 +124,37 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         if not isinstance(original_cep, str) or not original_cep.strip():
             return self._format_result(
                 is_valid=False,
+                dado_original=original_cep, # Adicionado dado_original
                 dado_normalizado=None,
                 mensagem="CEP vazio ou tipo inválido.",
                 details={"input_original": original_cep},
-                business_rule_applied={"code": self.VAL_CEP003, "type": "cep"} # Acessando via self.
+                business_rule_applied={"code": self.VAL_CEP003, "type": "CEP - Validação Primária", "name": "Input de CEP Inválido"} # Acessando via self. e nomeando
             )
 
         cleaned_cep = self._clean_cep(original_cep)
 
-        result_details = {"input_original": original_cep}
+        result_details = {"input_original": original_cep, "cleaned_data": cleaned_cep}
 
         # 2. Verificação de Formato Básico e Comprimento
         if not cleaned_cep.isdigit() or len(cleaned_cep) != 8:
             return self._format_result(
                 is_valid=False,
+                dado_original=original_cep, # Adicionado dado_original
                 dado_normalizado=cleaned_cep,
                 mensagem="Formato de CEP inválido: deve conter exatamente 8 dígitos numéricos.",
                 details=result_details,
-                business_rule_applied={"code": self.VAL_CEP005, "type": "cep"} # Acessando via self.
+                business_rule_applied={"code": self.VAL_CEP005, "type": "CEP - Validação Primária", "name": "Formato Básico de CEP Inválido"} # Acessando via self. e nomeando
             )
 
         # 3. Verificação de Padrões Sequenciais/Repetidos
         if self._is_sequential_or_repeated(cleaned_cep):
             return self._format_result(
                 is_valid=False,
+                dado_original=original_cep, # Adicionado dado_original
                 dado_normalizado=cleaned_cep,
                 mensagem="CEP inválido: contém dígitos sequenciais ou repetidos (e.g., 11111-111, 12345-678).",
                 details=result_details,
-                business_rule_applied={"code": self.VAL_CEP004, "type": "cep"} # Acessando via self.
+                business_rule_applied={"code": self.VAL_CEP004, "type": "CEP - Validação Primária", "name": "CEP com Padrão Sequencial/Repetido"} # Acessando via self. e nomeando
             )
 
         # 4. Consulta à API Externa (simulada)
@@ -181,8 +185,36 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         
         return self._format_result(
             is_valid=is_valid_cep,
+            dado_original=original_cep, # Adicionado dado_original
             dado_normalizado=cleaned_cep,
             mensagem=message,
             details=result_details,
-            business_rule_applied={"code": validation_code, "type": "cep"}
+            # Nome da regra de negócio para o caso de sucesso da validação do CEP
+            business_rule_applied={"code": validation_code, "type": "CEP - Validação Primária", "name": "Validação Final de CEP"}
         )
+
+    def _format_result(self, is_valid: bool, dado_original: Any, dado_normalizado: Optional[str], mensagem: str, # Adicionado dado_original
+                       details: Dict[str, Any], business_rule_applied: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Formata o resultado da validação em um dicionário padronizado.
+
+        Args:
+            is_valid (bool): Indica se a validação foi bem-sucedida.
+            dado_original (Any): O dado original que foi submetido para validação.
+            dado_normalizado (Optional[str]): O dado normalizado (ex: CEP limpo).
+            mensagem (str): Mensagem de status da validação.
+            details (Dict[str, Any]): Detalhes específicos da validação.
+            business_rule_applied (Dict[str, Any]): Regra de negócio aplicada.
+
+        Returns:
+            Dict[str, Any]: Dicionário com o resultado da validação.
+        """
+        return {
+            "is_valid": is_valid,
+            "dado_original": dado_original, # Passando dado_original
+            "dado_normalizado": dado_normalizado,
+            "mensagem": mensagem,
+            "details": details,
+            "business_rule_applied": business_rule_applied
+        }
+# Fim do código do CEPValidator

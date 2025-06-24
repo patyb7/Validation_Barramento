@@ -1,65 +1,45 @@
 # app/services/validation_service.py
-import logging
-import json
-from typing import Dict, Any, Optional, List, Union, Tuple
-from datetime import datetime, timezone
-import hashlib # Importa hashlib para gerar hash SHA256
-import uuid # Importa uuid para golden_record_id (caso não tenha sido importado em modelos)
 
-# Importações internas do projeto
+import logging
+from typing import Dict, Any, Optional, List, Union
+from datetime import datetime, timezone
+import uuid # Para manipulação de UUIDs
+import json # Para json.dumps
+from pydantic import BaseModel # Adicionado: Importar BaseModel
+
+# Importações de dependências e modelos
 from app.auth.api_key_manager import APIKeyManager
-from app.database.repositories import ValidationRecordRepository
+from app.database.repositories.validation_record_repository import ValidationRecordRepository
+from app.database.repositories.log_repository import LogRepository, LogEntry
 from app.rules.decision_rules import DecisionRules
 from app.models.validation_record import ValidationRecord
-# Importar UniversalValidationRequest do common.py, pois é o modelo de requisição da API
-from app.api.schemas.common import UniversalValidationRequest 
-# Assumindo que GoldenRecordSummary está em common.py ou em seu próprio arquivo de modelos
-# Se estiver em common.py, ajuste o import para from app.api.schemas.common import GoldenRecordSummary
-# Se não existir, defina-o abaixo ou em um novo arquivo de modelos se for complexo
-try:
-    from app.models.golden_record_summary import GoldenRecordSummary
-except ImportError:
-    # Fallback para GoldenRecordSummary se o modelo não for encontrado
-    logger.warning("Não foi possível importar GoldenRecordSummary de app.models.golden_record_summary. Usando definição simplificada.")
-    from pydantic import BaseModel # Adicionar BaseModel para o fallback
-    class GoldenRecordSummary(BaseModel):
-        id: uuid.UUID
-        dado_original: str
-        dado_normalizado: Optional[str] = None
-        is_valido: bool
-        app_name: str
-        data_validacao: datetime
-        class Config:
-            from_attributes = True
-            json_encoders = {
-                datetime: lambda dt: dt.isoformat(),
-                uuid.UUID: lambda u: str(u)
-            }
-            populate_by_name = True
+from app.api.schemas.common import UniversalValidationRequest, ValidationResponse, HistoryRecordResponse
 
-
-# Importar validadores específicos (Injeção de Dependência)
+# Importe os validadores reais
 from app.rules.phone.validator import PhoneValidator
 from app.rules.address.cep.validator import CEPValidator
 from app.rules.email.validator import EmailValidator
 from app.rules.document.cpf_cnpj.validator import CpfCnpjValidator
-from app.rules.address.address_validator import AddressValidator 
+from app.rules.address.address_validator import AddressValidator
+from app.rules.pessoa.nome.validator import NomeValidator
+from app.rules.pessoa.genero.validator import SexoValidator
+from app.rules.pessoa.rg.validator import RGValidator
+from app.rules.pessoa.data_nascimento.validator import DataNascimentoValidator
+# Importe o novo validador composto com o nome de classe corrigido
+from app.rules.pessoa.composite_validator import PessoaFullValidacao 
+
+# CONSTANTES DE MENSAGEM (para consistência)
+API_KEY_INVALID_MESSAGE = "API Key inválida ou não autorizada."
+INTERNAL_SERVER_ERROR_MESSAGE = "Ocorreu um erro interno inesperado."
 
 logger = logging.getLogger(__name__)
 
-# --- Constantes de Mensagens ---
-API_KEY_INVALID_MESSAGE = "API Key inválida."
-VALIDATION_SERVICE_NOT_READY_MESSAGE = "Serviço de validação não está pronto. Tente novamente mais tarde."
-INTERNAL_SERVER_ERROR_MESSAGE = "Erro interno no servidor ao processar a validação."
-VALIDATION_ERROR_MESSAGE = "Erro de validação de entrada ou funcionalidade não implementada."
-
 class ValidationService:
     """
-    Serviço centralizado para autenticação, validação de dados e gestão de registros.
-    Orquestra a chamada aos validadores específicos, persistência, aplicação de regras de negócio
-    e gestão do Golden Record.
+    Serviço central para orquestrar o processo de validação de dados.
+    Responsável por rotear as requisições para o validador correto,
+    aplicar regras de negócio, persistir resultados e gerenciar Golden Records.
     """
-
     def __init__(
         self,
         api_key_manager: APIKeyManager,
@@ -69,652 +49,442 @@ class ValidationService:
         cep_validator: CEPValidator,
         email_validator: EmailValidator,
         cpf_cnpj_validator: CpfCnpjValidator,
-        address_validator: AddressValidator 
+        address_validator: AddressValidator,
+        nome_validator: NomeValidator,
+        sexo_validator: SexoValidator,
+        rg_validator: RGValidator,
+        data_nascimento_validator: DataNascimentoValidator,
+        log_repo: LogRepository
     ):
         self.api_key_manager = api_key_manager
         self.repo = repo
         self.decision_rules = decision_rules
+        self.log_repo = log_repo
 
-        # Atribuição dos validadores injetados
-        self.phone_validator = phone_validator
-        self.cep_validator = cep_validator
-        self.email_validator = email_validator
-        self.cpf_cnpj_validator = cpf_cnpj_validator
-        self.address_validator = address_validator 
+        # Inicialize o PessoaFullValidacao aqui, passando as dependências
+        self.pessoa_full_validacao_validator = PessoaFullValidacao( 
+            phone_validator=phone_validator,
+            cep_validator=cep_validator,
+            email_validator=email_validator,
+            cpf_cnpj_validator=cpf_cnpj_validator,
+            address_validator=address_validator,
+            nome_validator=nome_validator,
+            sexo_validator=sexo_validator,
+            rg_validator=rg_validator,
+            data_nascimento_validator=data_nascimento_validator
+        )
 
-        self.validators: Dict[str, Any] = {
-            "telefone": self.phone_validator, 
-            "cep": self.cep_validator,      
-            "email": self.email_validator,  
-            "cpf_cnpj": self.cpf_cnpj_validator, 
-            "endereco": self.address_validator, 
+        # Dicionário de validadores, mapeando 'type' (da requisição) para a instância do validador
+        self.validators = {
+            "telefone": phone_validator,
+            "cep": cep_validator,
+            "email": email_validator,
+            "cpf_cnpj": cpf_cnpj_validator,
+            "endereco": address_validator,
+            "nome": nome_validator,
+            "genero": sexo_validator,
+            "rg": rg_validator,
+            "data_nascimento": data_nascimento_validator,
+            "pessoa_completa": self.pessoa_full_validacao_validator 
         }
-        logger.info("ValidationService inicializado com sucesso.")
+        logger.info("ValidationService inicializado com todos os validadores e repositórios.")
 
-    async def _get_validator(self, validation_type: str) -> Any:
+    async def validate_data(self, app_info: Dict[str, Any], request: UniversalValidationRequest) -> Dict[str, Any]:
         """
-        Retorna a instância do validador para o tipo de validação especificada.
-        Levanta um ValueError se o tipo não for suportado.
+        Orquestra o processo de validação de um dado específico.
         """
-        validator = self.validators.get(validation_type)
+        app_name_log = app_info.get('app_name', 'Desconhecido')
+        operator_id_log = request.operator_id or app_name_log
+
+        if not app_info or not app_info.get("is_active"):
+            logger.warning(f"Tentativa de validação com API Key inválida ou inativa: {app_name_log}...")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="AUTENTICACAO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"app_name": app_name_log, "status": "failed"},
+                    status_operacao="FALHA",
+                    mensagem_log="Tentativa de validação com API Key inválida ou inativa.",
+                    client_entity_id_afetado=request.client_identifier 
+                )
+            )
+            return {"status": "error", "message": API_KEY_INVALID_MESSAGE, "status_code": 401}
+
+        logger.info(f"Requisição de validação recebida do app '{app_name_log}' para tipo '{request.validation_type}'.")
+
+        validator = self.validators.get(request.validation_type)
         if not validator:
-            logger.error(f"Tipo de validação '{validation_type}' não suportado ou validador não configurado.")
-            raise ValueError(f"Tipo de validação '{validation_type}' não suportado ou validador não configurado.")
-        return validator
-
-    async def _perform_data_validation(self, validation_type: str, data: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Executa a validação específica do tipo de dado e retorna o resultado.
-        """
-        validator = await self._get_validator(validation_type)
-        input_data_original_for_record = data 
-        primary_validation_result: Dict[str, Any] = {}
-
-        # Mapeia UniversalValidationRequest.data para o formato esperado pelos validadores
-        if validation_type == "telefone":
-            if not isinstance(data, str):
-                raise ValueError("Para validação de 'telefone', o campo 'data' deve ser uma string.")
-            phone_number = data
-            primary_validation_result = await validator.validate(phone_number) 
-        elif validation_type == "cep":
-            if not isinstance(data, str):
-                raise ValueError("Para validação de 'cep', o campo 'data' deve ser uma string.")
-            cep_number = data
-            primary_validation_result = await validator.validate(cep_number) 
-        elif validation_type == "email":
-            if not isinstance(data, str):
-                raise ValueError("Para validação de 'email', o campo 'data' deve ser uma string.")
-            email_address = data
-            primary_validation_result = await validator.validate(email_address) 
-        elif validation_type == "cpf_cnpj":
-            if not isinstance(data, str):
-                raise ValueError("Para validação de 'cpf_cnpj', o campo 'data' deve ser uma string.")
-            document_number = data
-            primary_validation_result = await validator.validate(document_number) 
-        elif validation_type == "endereco":
-            if not isinstance(data, dict):
-                raise ValueError("Para validação de 'endereco', o campo 'data' deve ser um dicionário com os campos de endereço.")
-            address_data = data 
-            address_data_cleaned = {k: v for k, v in address_data.items() if v is not None}
-            if not address_data_cleaned:
-                raise ValueError("Para validação de 'endereco', ao menos um campo de endereço (logradouro, numero, etc.) é obrigatório em 'data'.")
-            
-            input_data_original_for_record = json.dumps(address_data_cleaned)
-            primary_validation_result = await validator.validate(address_data_cleaned) 
-        else:
-            raise NotImplementedError(f"Validação para o tipo '{validation_type}' não implementada ou configurada neste serviço.")
-
-        primary_validation_result["input_data_original"] = input_data_original_for_record
-        return primary_validation_result
-
-    def _create_initial_validation_record_model(self,
-                                                    primary_validation_result: Dict[str, Any],
-                                                    request: UniversalValidationRequest, 
-                                                    app_name: str) -> ValidationRecord:
-        """
-        Cria e retorna uma instância inicial de ValidationRecord com os resultados da validação primária.
-        Gera o 'client_entity_id' com base no client_identifier, dado normalizado e um identificador adicional (cclub ou cpssoa).
-        """
-        current_user_identifier = request.operator_identifier if request.operator_identifier else app_name 
-
-        business_rule_params_from_validation = primary_validation_result.get("business_rule_applied", {}).get("parameters", {})
-
-        determined_client_entity_id = ""
-        if request.client_entity_id: 
-            determined_client_entity_id = request.client_entity_id
-        else: 
-            identification_parts = [
-                request.client_identifier,
-                request.type, 
-                primary_validation_result.get("dado_normalizado", ""),
-                request.cclub, 
-                request.cpssoa, 
-                str(request.data) if isinstance(request.data, str) else None 
-            ]
-            composite_id_string = "-".join(filter(None, identification_parts)) 
-            if composite_id_string: 
-                determined_client_entity_id = hashlib.sha256(composite_id_string.encode('utf-8')).hexdigest()
-            else:
-                determined_client_entity_id = hashlib.sha256(str(uuid.uuid4()).encode('utf-8')).hexdigest()
-        
-        dado_original_for_record = primary_validation_result.get("input_data_original", "")
-        if isinstance(dado_original_for_record, dict):
-            dado_original_for_record = json.dumps(dado_original_for_record)
-
-        record_model = ValidationRecord(
-            dado_original=dado_original_for_record,
-            dado_normalizado=primary_validation_result.get("dado_normalizado"),
-            is_valido=primary_validation_result.get("is_valid", False),
-            mensagem=primary_validation_result.get("mensagem", "Validação concluída."),
-            origem_validacao=primary_validation_result.get("origem_validacao", "servico_generico"),
-            tipo_validacao=request.type, 
-            app_name=app_name,
-            client_identifier=request.client_identifier,
-            client_entity_id=determined_client_entity_id, 
-            validation_details=primary_validation_result.get("details", {}),
-            data_validacao=datetime.now(timezone.utc), 
-
-            regra_negocio_codigo=primary_validation_result.get("business_rule_applied", {}).get("code"),
-            regra_negocio_descricao=primary_validation_result.get("business_rule_applied", {}).get("message"), 
-            regra_negocio_tipo=primary_validation_result.get("business_rule_applied", {}).get("type"),
-            regra_negocio_parametros=business_rule_params_from_validation, 
-
-            usuario_criacao=current_user_identifier, 
-            usuario_atualizacao=current_user_identifier,
-            is_deleted=False,
-            deleted_at=None,
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
-        )
-        return record_model
-
-    async def _apply_business_rules_to_record(self, record_model: ValidationRecord, app_info: Dict[str, Any]) -> None:
-        """
-        Aplica as regras de decisão de negócio pós-validação e atualiza o registro in-place.
-        As regras de decisão podem alterar o 'is_valido', 'mensagem', e os detalhes da regra de negócio.
-        """
-        # AQUI É ONDE apply_rules É CHAMADO
-        actions_summary = await self.decision_rules.apply_rules( 
-            record=record_model,
-            app_info=app_info,
-            repository=self.repo 
-        )
-        
-        if record_model.validation_details is None:
-            record_model.validation_details = {}
-        
-        record_model.validation_details["post_validation_actions_summary"] = actions_summary
-
-        soft_delete_action = actions_summary.get('soft_delete_action', {})
-        if soft_delete_action.get('status') == 'Applied' and soft_delete_action.get('code') == 'RN_A_001':
-            record_model.is_deleted = True
-            record_model.deleted_at = datetime.now(timezone.utc)
-            logger.info(f"Registro ID {record_model.id} marcado para soft delete pela regra '{soft_delete_action.get('code')}'.")
-        
-
-    async def _handle_golden_record_logic(self,
-                                            current_record_model: ValidationRecord,
-                                            normalized_data: Optional[str],
-                                            validation_type: str,
-                                            app_info: Dict[str, Any]) -> Tuple[ValidationRecord, bool, Optional[uuid.UUID], Optional[GoldenRecordSummary]]: 
-        """
-        Gerencia a lógica de Golden Record: busca, persiste, elege e atualiza status.
-        Retorna o registro persistido, se é o GR, o ID do GR e os dados do GR.
-        """
-        if not normalized_data or not current_record_model.is_valido: 
-            current_record_model.is_golden_record = False
-            current_record_model.golden_record_id = None
-            logger.info(f"Registro ID {current_record_model.id} não elegível para Golden Record (não normalizado ou inválido).")
-            return current_record_model, False, None, None
-
-        golden_record_id: Optional[uuid.UUID] = None
-        is_this_transaction_golden_record = False
-        golden_record_data_summary: Optional[GoldenRecordSummary] = None
-
-        if app_info.get('can_check_duplicates'): 
-            existing_valid_records = await self.repo.get_all_records_by_normalized_data(
-                dado_normalizado=normalized_data,
-                tipo_validacao=validation_type,
-                include_deleted=False 
-            )
-            logger.debug(f"Encontrados {len(existing_valid_records)} registros existentes válidos para '{normalized_data}'.")
-
-            records_to_evaluate = [rec for rec in existing_valid_records if rec.id != current_record_model.id]
-            records_to_evaluate.append(current_record_model)
-            
-            candidate_golden_record, best_score = self._elect_golden_record_candidate(records_to_evaluate)
-            
-            if candidate_golden_record:
-                golden_record_id = candidate_golden_record.id
-                is_this_transaction_golden_record = (candidate_golden_record.id == current_record_model.id)
-
-                await self._update_database_golden_record_statuses(
-                    normalized_data, validation_type, golden_record_id, records_to_evaluate
+            logger.warning(f"Tipo de validação '{request.validation_type}' não suportado.")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="VALIDACAO_DADO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"validation_type": request.validation_type, "data": request.data.model_dump() if hasattr(request.data, 'model_dump') else request.data}, 
+                    status_operacao="FALHA",
+                    mensagem_log=f"Tipo de validação '{request.validation_type}' não suportado.",
+                    client_entity_id_afetado=request.client_identifier 
                 )
-                logger.info(f"Registro ID {candidate_golden_record.id} eleito como o novo Golden Record para '{normalized_data}' (score: {best_score}).")
-                
-                full_golden_record = await self.repo.get_record_by_id(golden_record_id)
-                if full_golden_record:
-                    golden_record_data_summary = GoldenRecordSummary(
-                        id=full_golden_record.id,
-                        dado_original=full_golden_record.dado_original,
-                        dado_normalizado=full_golden_record.dado_normalizado,
-                        is_valido=full_golden_record.is_valido,
-                        app_name=full_golden_record.app_name,
-                        data_validacao=full_golden_record.data_validacao
-                    )
-            else:
-                logger.warning(f"Nenhum Golden Record eleito para '{normalized_data}'. Isso pode ocorrer se não houver registros válidos.")
-                if current_record_model.is_valido:
-                    golden_record_id = current_record_model.id
-                    is_this_transaction_golden_record = True 
-                    await self.repo.update_golden_record_status(
-                        current_record_model.id, True, current_record_model.id
-                    )
-                    full_golden_record = await self.repo.get_record_by_id(golden_record_id)
-                    if full_golden_record:
-                        golden_record_data_summary = GoldenRecordSummary(
-                            id=full_golden_record.id,
-                            dado_original=full_golden_record.dado_original,
-                            dado_normalizado=full_golden_record.dado_normalizado,
-                            is_valido=full_golden_record.is_valido,
-                            app_name=full_golden_record.app_name,
-                            data_validacao=full_golden_record.data_validacao
-                        )
-
-        else:
-            logger.info(f"Aplicação '{app_info.get('app_name')}' não tem permissão para verificar duplicatas. Pulando lógica de Golden Record.")
-            
-        return current_record_model, is_this_transaction_golden_record, golden_record_id, golden_record_data_summary
-
-    def _elect_golden_record_candidate(self, records_to_evaluate: List[ValidationRecord]) -> Tuple[Optional[ValidationRecord], int]:
-        """
-        Elege o melhor candidato a Golden Record a partir de uma lista de registros válidos.
-        Prioriza registros com maior pontuação e, em caso de empate, o mais recente.
-        """
-        best_score = -1
-        candidate_golden_record: Optional[ValidationRecord] = None
-
-        valid_records = [rec for rec in records_to_evaluate if rec.is_valido]
-
-        if not valid_records:
-            logger.info("Nenhum registro válido encontrado para eleição do Golden Record.")
-            return None, -1
-
-        for rec in valid_records:
-            score = self._score_record(rec) 
-            if score > best_score or (score == best_score and candidate_golden_record and rec.data_validacao and rec.data_validacao > candidate_golden_record.data_validacao):
-                best_score = score
-                candidate_golden_record = rec
-        
-        logger.debug(f"Golden Record candidato eleito: ID={candidate_golden_record.id if candidate_golden_record else 'N/A'}, Score={best_score}")
-        return candidate_golden_record, best_score
-
-    def _score_record(self, record: ValidationRecord) -> int:
-        """
-        Atribui uma pontuação a um registro de validação para a eleição do Golden Record.
-        Regras de pontuação:
-        - Registros válidos: +1000 pontos (alta prioridade)
-        - Pontuação por confiabilidade da fonte (app_name):
-            - CRM_Principal: +500
-            - ERP_System: +450
-            - Seguros App: +300
-            - App_Marketing: +100
-            - Outros: +50
-        - Pontuação por detalhes de validação (exemplos):
-            - Telefone validado por lib externa (phonenumbers): +50
-            - CEP com endereço completo encontrado: +50
-            - Email com sintaxe válida: +40
-            - Email com domínio resolúvel: +60
-            - CPF/CNPJ com checksum válido: +70
-            - CPF/CNPJ com status 'REGULAR' da Receita Federal: +100
-            - Endereço normalizado: +40
-            - Endereço geocodificado: +80
-        - Recência: Pequeno bônus baseado no timestamp (desempate).
-        """
-        score = 0
-        
-        if record.is_valido:
-            score += 1000 
-
-        if record.app_name == "CRM_Principal":
-            score += 500
-        elif record.app_name == "ERP_System":
-            score += 450
-        elif record.app_name == "Seguros App":
-            score += 300
-        elif record.app_name == "App_Marketing":
-            score += 100
-        else:
-            score += 50 
-
-        if record.validation_details:
-            if record.tipo_validacao == "telefone":
-                if record.validation_details.get("phonenumbers_valid"):
-                    score += 50 
-            elif record.tipo_validacao == "cep":
-                if record.validation_details.get("address_found"):
-                    score += 50 
-            elif record.tipo_validacao == "email":
-                if record.validation_details.get("is_syntax_valid"):
-                    score += 40 
-                if record.validation_details.get("domain_resolves"):
-                    score += 60 
-            elif record.tipo_validacao == "cpf_cnpj":
-                if record.validation_details.get("is_valid_checksum"):
-                    score += 70 
-                if record.validation_details.get("status_receita_federal") == "REGULAR":
-                    score += 100 
-            elif record.tipo_validacao == "endereco":
-                if record.validation_details.get("is_normalized"):
-                    score += 40 
-                if record.validation_details.get("is_geocoded"):
-                    score += 80 
-
-        if record.data_validacao:
-            now = datetime.now(timezone.utc)
-            time_diff_seconds = (now - record.data_validacao).total_seconds()
-            
-            max_recency_seconds = 365 * 24 * 3600 
-            recency_bonus = max(0, int((max_recency_seconds - time_diff_seconds) / (86400 * 5))) 
-            score += recency_bonus
-        
-        return score
-
-
-    async def _update_database_golden_record_statuses(self, normalized_data: str, validation_type: str, golden_record_id: Optional[uuid.UUID], records_to_evaluate: List[ValidationRecord]): 
-        """
-        Atualiza o status de Golden Record no banco de dados para todos os registros afetados.
-        """
-        if not golden_record_id:
-            logger.warning(f"Tentativa de atualizar status do Golden Record sem um golden_record_id válido para '{normalized_data}'. Ignorando.")
-            return
-
-        all_related_records = await self.repo.get_all_records_by_normalized_data(
-            dado_normalizado=normalized_data,
-            tipo_validacao=validation_type,
-            include_deleted=True 
-        )
-
-        for rec in all_related_records:
-            if rec.id == golden_record_id:
-                if not rec.is_golden_record or rec.golden_record_id != golden_record_id:
-                    logger.debug(f"Atualizando GR status: Record ID {rec.id} para True, Golden Record ID {golden_record_id}.")
-                    await self.repo.update_golden_record_status(
-                        rec.id,
-                        is_golden=True,
-                        golden_record_id=golden_record_id 
-                    )
-            else:
-                if rec.is_golden_record or rec.golden_record_id != golden_record_id:
-                    logger.debug(f"Atualizando GR status: Record ID {rec.id} para False, Golden Record ID {golden_record_id}.")
-                    await self.repo.update_golden_record_status(
-                        rec.id,
-                        is_golden=False,
-                        golden_record_id=golden_record_id
-                    )
-        logger.info(f"Status de Golden Record atualizados no DB para dado normalizado '{normalized_data}'. Novo GR ID: {golden_record_id}.")
-
-
-    async def validate_data(self, app_info: Dict[str, Any], request: UniversalValidationRequest) -> Dict[str, Any]: 
-        """
-        Processa uma requisição de validação de dados: autentica, valida, persiste,
-        aplica regras de negócio e gerencia o Golden Record.
-        """
-        logger.info(f"Recebida requisição para validar tipo '{request.type}'. ID do Cliente: {request.client_identifier}. Operador: {request.operator_identifier}")
-
-        app_name = app_info.get("app_name", "Desconhecido")
-        logger.info(f"Requisição autenticada para a aplicação '{app_name}'. Proseguindo com validação de {request.type}.")
-
-        input_data_original_for_logging = "" 
-        final_persisted_record: Optional[ValidationRecord] = None 
+            )
+            return {"status": "error", "message": f"Tipo de validação '{request.validation_type}' não suportado.", "status_code": 400}
 
         try:
-            primary_validation_result = await self._perform_data_validation(request.type, request.data) 
-            input_data_original_for_logging = primary_validation_result.get("input_data_original", "")
+            # Passa todos os dados brutos e o client_identifier para o validador
+            # Se for um validador composto (pessoa_completa), ele saberá como lidar com o dict.
+            # Se for um validador simples (telefone), ele espera que request.data contenha o dado do telefone.
+            validation_result = await validator.validate(request.data, client_identifier=request.client_identifier)
 
-            current_record_model = self._create_initial_validation_record_model(
-                primary_validation_result, request, app_name
+            # Converte dado_original para string se for um objeto ou dicionário
+            original_data_str = json.dumps(request.data.model_dump()) if isinstance(request.data, BaseModel) else json.dumps(request.data) if isinstance(request.data, dict) else str(request.data)
+            
+            # Ajusta dado_normalizado para string se for um dicionário (para compatibilidade com VARCHAR)
+            normalized_data_str = json.dumps(validation_result.get("dado_normalizado")) if isinstance(validation_result.get("dado_normalizado"), dict) else str(validation_result.get("dado_normalizado"))
+
+            record = ValidationRecord(
+                dado_original=original_data_str,
+                dado_normalizado=normalized_data_str,
+                is_valido=validation_result.get("is_valid"),
+                mensagem=validation_result.get("mensagem"),
+                origem_validacao=validation_result.get("origem_validacao", app_name_log),
+                tipo_validacao=request.validation_type,
+                app_name=app_name_log,
+                client_identifier=request.client_identifier,
+                validation_details=validation_result.get("details", {}),
+                regra_negocio_codigo=validation_result.get("business_rule_applied", {}).get("code"),
+                regra_negocio_descricao=validation_result.get("business_rule_applied", {}).get("description"),
+                regra_negocio_tipo=validation_result.get("business_rule_applied", {}).get("type"),
+                regra_negocio_parametros=validation_result.get("business_rule_applied", {}).get("parameters"),
+                usuario_criacao=operator_id_log,
+                usuario_atualizacao=operator_id_log,
+                is_golden_record=False,
+                golden_record_id=None,
+                status_qualificacao="PENDING",
+                last_enrichment_attempt_at=None,
+                client_entity_id=request.client_identifier
             )
             
-            if current_record_model.id: 
-                current_record_model.short_id_alias = current_record_model.generate_short_id_alias()
-                logger.debug(f"Generated short_id_alias for record {current_record_model.id}: {current_record_model.short_id_alias}")
-
-            await self._apply_business_rules_to_record(current_record_model, app_info)
-
-            persisted_record = await self.repo.create_record(current_record_model)
+            persisted_record = await self.repo.create_record(record)
             if not persisted_record:
-                logger.error("Falha ao criar novo registro durante a validação.")
-                return {
-                    "status": "error",
-                    "message": "Erro interno no servidor ao processar a validação: Falha ao persistir o registro atual.",
-                    "code": 500,
-                    "is_valid": current_record_model.is_valido, 
-                    "validation_details": current_record_model.validation_details,
-                    "app_name": app_name,
-                    "client_identifier": request.client_identifier,
-                    "input_data_original": request.data,
-                    "input_data_cleaned": current_record_model.dado_normalizado,
-                    "tipo_validacao": request.type,
-                    "origem_validacao": current_record_model.origem_validacao,
-                    "regra_negocio_codigo": current_record_model.regra_negocio_codigo,
-                    "regra_negocio_descricao": current_record_model.regra_negocio_descricao,
-                    "regra_negocio_tipo": current_record_model.regra_negocio_tipo,
-                    "regra_negocio_parametros": current_record_model.regra_negocio_parametros,
-                    "usuario_criacao": request.operator_identifier,
-                    "usuario_atualizacao": request.operator_identifier,
-                    "client_entity_id": current_record_model.client_entity_id,
-                    "short_id_alias": current_record_model.short_id_alias
-                }
+                raise Exception("Falha ao persistir o registro de validação inicial.")
 
-            logger.info(f"Novo registro criado para '{app_name}' ('{request.data}'). ID: {persisted_record.id}")
+            actions_summary = await self.decision_rules.apply_rules(persisted_record, app_info)
 
-            final_persisted_record, is_this_transaction_golden_record, golden_record_id, golden_record_data = \
-                await self._handle_golden_record_logic(
-                    persisted_record, 
-                    persisted_record.dado_normalizado, 
-                    request.type, 
-                    app_info 
+            # A resposta deve ser um dicionário que FastAPI pode converter para ValidationResponse
+            response_data = ValidationResponse(
+                id=persisted_record.id,
+                dado_original=persisted_record.dado_original,
+                dado_normalizado=persisted_record.dado_normalizado,
+                is_valido=persisted_record.is_valido,
+                mensagem=persisted_record.mensagem,
+                origem_validacao=persisted_record.origem_validacao,
+                tipo_validacao=persisted_record.tipo_validacao,
+                app_name=persisted_record.app_name,
+                client_identifier=persisted_record.client_identifier,
+                short_id_alias=persisted_record.short_id_alias,
+                validation_details=persisted_record.validation_details,
+                data_validacao=persisted_record.data_validacao,
+                regra_negocio_codigo=persisted_record.regra_negocio_codigo,
+                regra_negocio_descricao=persisted_record.regra_negocio_descricao,
+                regra_negocio_tipo=persisted_record.regra_negocio_tipo,
+                regra_negocio_parametros=persisted_record.regra_negocio_parametros,
+                is_golden_record=persisted_record.is_golden_record,
+                golden_record_id=persisted_record.golden_record_id,
+                status_qualificacao=persisted_record.status_qualificacao,
+                last_enrichment_attempt_at=persisted_record.last_enrichment_attempt_at,
+                client_entity_id=persisted_record.client_entity_id,
+                status="success",
+                message="Validação concluída com sucesso.",
+                status_code=200
+            ).model_dump(mode='json') # Converter para dicionário para retorno consistente
+
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="VALIDACAO_DADO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={
+                        "validation_type": request.validation_type,
+                        "dado_normalizado": persisted_record.dado_normalizado,
+                        "is_valid": persisted_record.is_valido,
+                        "record_id": str(persisted_record.id) if persisted_record.id else None,
+                        "actions_summary": actions_summary
+                    },
+                    status_operacao="SUCESSO",
+                    mensagem_log=f"Validação do tipo '{request.validation_type}' para '{persisted_record.dado_normalizado}' concluída. Válido: {persisted_record.is_valido}. Record ID: {persisted_record.id}",
+                    client_entity_id_afetado=persisted_record.client_entity_id 
                 )
-
-            logger.info(f"Operação de validação e Golden Record concluída para ID {final_persisted_record.id}. "
-                                    f"Válido: {final_persisted_record.is_valido}. "
-                                    f"Este registro é GR: {is_this_transaction_golden_record}. ID do GR: {golden_record_id}")
-
-            return self._build_response_payload(
-                final_persisted_record,
-                is_this_transaction_golden_record,
-                golden_record_id, 
-                golden_record_data 
             )
 
-        except (ValueError, NotImplementedError) as e:
-            logger.error(f"{VALIDATION_ERROR_MESSAGE}: {e}", exc_info=True)
-            code = 400 if isinstance(e, ValueError) else 501
-            return {
-                "status": "error",
-                "message": str(e),
-                "code": code,
-                "is_valid": False,
-                "validation_details": {"error_type": "input_validation_or_not_implemented_error"}
-            }
+            return response_data
+
         except Exception as e:
-            logger.error(f"Erro inesperado durante o processamento da validação para '{input_data_original_for_logging}': {e}", exc_info=True)
-            return {
-                "status": "error",
-                "message": f"{INTERNAL_SERVER_ERROR_MESSAGE}: {e}",
-                "code": 500,
-                "is_valid": False,
-                "validation_details": {"error_type": "internal_server_error"}
-            }
+            logger.error(f"Erro no ValidationService.validate_data para tipo 'telefone': {e}", exc_info=True)
+            # Tenta converter request.data para JSON para o log de erro, se possível
+            error_data_for_log = request.data
+            if hasattr(request.data, 'model_dump'):
+                try:
+                    error_data_for_log = request.data.model_dump()
+                except Exception:
+                    pass # Se falhar, mantém o objeto original
+            elif isinstance(request.data, dict):
+                pass
+            else:
+                error_data_for_log = str(request.data)
 
-    def _build_response_payload(
-        self,
-        record: ValidationRecord,
-        is_this_transaction_golden_record: bool,
-        golden_record_id: Optional[uuid.UUID], 
-        golden_record_data: Optional[GoldenRecordSummary] 
-    ) -> Dict[str, Any]:
-        """Constrói o payload da resposta da API."""
-        return {
-            "status": "success" if record.is_valido else "invalid",
-            "message": record.mensagem,
-            "is_valid": record.is_valido,
-            "validation_details": record.validation_details,
-            "app_name": record.app_name,
-            "client_identifier": record.client_identifier,
-            "record_id": record.id,
-            "short_id_alias": record.short_id_alias, 
-            "input_data_original": record.dado_original,
-            "input_data_cleaned": record.dado_normalizado,
-            "tipo_validacao": record.tipo_validacao,
-            "origem_validacao": record.origem_validacao,
-            "regra_negocio_codigo": record.regra_negocio_codigo,
-            "regra_negocio_descricao": record.regra_negocio_descricao,
-            "regra_negocio_tipo": record.regra_negocio_tipo,
-            "regra_negocio_parametros": record.regra_negocio_parametros,
-            "usuario_criacao": record.usuario_criacao,
-            "usuario_atualizacao": record.usuario_atualizacao,
-            "code": 200 if record.is_valido else 400,
-            "is_golden_record_for_this_transaction": is_this_transaction_golden_record,
-            "golden_record_id_for_normalized_data": golden_record_id,
-            "golden_record_data": golden_record_data.model_dump(exclude_none=True) if golden_record_data else None, 
-            "client_entity_id": record.client_entity_id, 
-            "status_qualificacao": record.status_qualificacao, 
-            "last_enrichment_attempt_at": record.last_enrichment_attempt_at 
-        }
 
-    async def get_validation_history(self, app_info: Dict[str, Any], limit: int, include_deleted: bool) -> Dict[str, Any]: 
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ERRO_VALIDACAO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"validation_type": request.validation_type, "data": error_data_for_log, "error": str(e)},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Erro durante a validação do tipo '{request.validation_type}': {e}",
+                    client_entity_id_afetado=request.client_identifier 
+                )
+            )
+            return {"status": "error", "message": INTERNAL_SERVER_ERROR_MESSAGE, "status_code": 500}
+
+    async def get_validation_history(self, api_key_str: str, limit: int, include_deleted: bool) -> Dict[str, Any]:
         """
-        Obtém o histórico de registros de validação.
-        Recebe app_info para verificação de permissões ou logging.
+        Recupera o histórico de validações para uma determinada aplicação.
         """
-        logger.info(f"Buscando histórico de validação para app '{app_info.get('app_name', 'Desconhecido')}': limite={limit}, incluir_deletados={include_deleted}")
-        # A autenticação já deve ter ocorrido antes desta função ser chamada na rota
-        
+        app_info = self.api_key_manager.get_app_info(api_key_str)
+        app_name_log = app_info.get("app_name", "Desconhecido")
+        operator_id_log = "N/A" # Para histórico, operador pode não ser conhecido
+
+        if not app_info or not app_info.get("is_active"):
+            logger.warning(f"Tentativa de acesso ao histórico com API Key inválida ou inativa: {api_key_str[:8]}...")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ACESSO_HISTORICO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"api_key_prefix": api_key_str[:8], "status": "failed"},
+                    status_operacao="FALHA",
+                    mensagem_log="Tentativa de acesso ao histórico com API Key inválida ou inativa.",
+                    client_entity_id_afetado=None 
+                )
+            )
+            return {"status": "error", "message": API_KEY_INVALID_MESSAGE, "status_code": 401}
+
         try:
-            records = await self.repo.get_last_records(limit=limit, include_deleted=include_deleted)
-            for record in records:
-                if record.id and not record.short_id_alias:
-                    record.short_id_alias = record.generate_short_id_alias()
+            records = await self.repo.get_records_by_app_name(app_name_log, limit, include_deleted)
+            history_list = [HistoryRecordResponse.model_validate(record).model_dump(mode='json') for record in records]
             
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ACESSO_HISTORICO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"limit": limit, "include_deleted": include_deleted, "record_count": len(history_list)},
+                    status_operacao="SUCESSO",
+                    mensagem_log=f"Histórico de validações recuperado para o app '{app_name_log}'. {len(history_list)} registros.",
+                    client_entity_id_afetado=None 
+                )
+            )
             return {
                 "status": "success",
-                "message": "Histórico obtido com sucesso.",
-                "data": records
+                "message": "Histórico de validações recuperado.",
+                "history": history_list,
+                "status_code": 200
             }
         except Exception as e:
-            logger.error(f"Erro ao obter histórico de validação: {e}", exc_info=True)
-            return {
-                "status": "error",
-                "message": f"Erro interno ao obter histórico: {e}",
-                "code": 500,
-                "data": []
-            }
+            logger.error(f"Erro ao recuperar histórico para app '{app_name_log}': {e}", exc_info=True)
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ERRO_HISTORICO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"limit": limit, "include_deleted": include_deleted, "error": str(e)},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Erro ao recuperar histórico para o app '{app_name_log}': {e}",
+                    client_entity_id_afetado=None 
+                )
+            )
+            return {"status": "error", "message": INTERNAL_SERVER_ERROR_MESSAGE, "status_code": 500}
 
+    async def soft_delete_record(self, api_key_str: str, record_id: uuid.UUID) -> Dict[str, Any]:
+        """
+        Executa o soft delete de um registro de validação.
+        Requer permissão 'can_delete_records'.
+        """
+        app_info = self.api_key_manager.get_app_info(api_key_str)
+        app_name_log = app_info.get('app_name', 'Desconhecido')
+        operator_id_log = "N/A" # Pode ser um usuário autenticado em um cenário real
 
-    async def soft_delete_record(self, app_info: Dict[str, Any], record_id: uuid.UUID) -> Dict[str, Any]: 
+        record_to_delete = await self.repo.get_record_by_id(record_id)
+        client_entity_id_affected = record_to_delete.client_entity_id if record_to_delete else None
+
+        if not app_info or not app_info.get("is_active"):
+            logger.warning(f"Tentativa de soft delete com API Key inválida ou inativa: {api_key_str[:8]}...")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="SOFT_DELETE",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "API Key inválida"},
+                    status_operacao="FALHA",
+                    mensagem_log="Tentativa de soft delete com API Key inválida ou inativa.",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
+                )
+            )
+            return {"status": "error", "message": API_KEY_INVALID_MESSAGE, "status_code": 401}
+        
+        if not app_info.get("can_delete_records"):
+            logger.warning(f"Aplicação '{app_name_log}' sem permissão para soft delete de registro {record_id}.")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="SOFT_DELETE",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "Sem permissão"},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Aplicação '{app_name_log}' sem permissão para soft delete de registro {record_id}.",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
+                )
+            )
+            return {"status": "error", "message": "Permissão negada: Sua API Key não tem privilégios para deletar registros.", "status_code": 403}
+
+        try:
+            success = await self.repo.soft_delete_record(record_id)
+            if success:
+                record = await self.repo.get_record_by_id(record_id)
+                await self.log_repo.add_log_entry(
+                    LogEntry(
+                        tipo_evento="SOFT_DELETE",
+                        app_origem=app_name_log,
+                        usuario_operador=record.usuario_atualizacao if record else operator_id_log,
+                        detalhes_evento_json={"record_id": str(record_id), "status": "success"},
+                        status_operacao="SUCESSO",
+                        mensagem_log=f"Registro {record_id} soft-deletado com sucesso.",
+                        related_record_id=record_id,
+                        client_entity_id_afetado=client_entity_id_affected 
+                    )
+                )
+                return {"status": "success", "message": f"Registro {record_id} soft-deletado com sucesso.", "status_code": 200}
+            else:
+                await self.log_repo.add_log_entry(
+                    LogEntry(
+                        tipo_evento="SOFT_DELETE",
+                        app_origem=app_name_log,
+                        usuario_operador=operator_id_log,
+                        detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "Não encontrado ou já deletado"},
+                        status_operacao="FALHA",
+                        mensagem_log=f"Falha ao soft-deletar registro {record_id}: Não encontrado ou já deletado.",
+                        related_record_id=record_id,
+                        client_entity_id_afetado=client_entity_id_affected 
+                    )
+                )
+                return {"status": "error", "message": f"Registro {record_id} não encontrado ou já foi soft-deletado.", "status_code": 404}
+
+        except Exception as e:
+            logger.error(f"Erro ao soft-deletar registro {record_id} para app '{app_name_log}': {e}", exc_info=True)
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ERRO_SOFT_DELETE",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "error": str(e)},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Erro ao soft-deletar registro {record_id}: {e}",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
+                )
+            )
+            return {"status": "error", "message": INTERNAL_SERVER_ERROR_MESSAGE, "status_code": 500}
+
+    async def restore_record(self, api_key_str: str, record_id: uuid.UUID) -> Dict[str, Any]:
         """
-        Executa o soft delete (exclusão lógica) de um registro de validação.
-        Após o soft delete, reavalia e reelege o Golden Record para o dado normalizado, se necessário.
+        Restaura um registro de validação que foi soft-deletado.
+        Requer permissão 'can_delete_records'.
         """
-        logger.info(f"Recebida requisição de soft delete para record_id: {record_id} pela aplicação: {app_info.get('app_name', 'Desconhecido')}...")
+        app_info = self.api_key_manager.get_app_info(api_key_str)
+        app_name_log = app_info.get('app_name', 'Desconhecido')
+        operator_id_log = "N/A" # Pode ser um usuário autenticado
+
+        record_to_restore = await self.repo.get_record_by_id(record_id)
+        client_entity_id_affected = record_to_restore.client_entity_id if record_to_restore else None
+
+        if not app_info or not app_info.get("is_active"):
+            logger.warning(f"Tentativa de restauração com API Key inválida ou inativa: {api_key_str[:8]}...")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="RESTAURACAO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "API Key inválida"},
+                    status_operacao="FALHA",
+                    mensagem_log="Tentativa de restauração com API Key inválida ou inativa.",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
+                )
+            )
+            return {"status": "error", "message": API_KEY_INVALID_MESSAGE, "status_code": 401}
 
         if not app_info.get("can_delete_records"):
-            logger.warning(f"Tentativa de soft delete não autorizado para record_id {record_id} por aplicação sem permissão: {app_info.get('app_name', 'Desconhecido')}.")
-            return {"status": "error", "message": "Não autorizado ou sem permissão para deletar registros.", "code": 403}
-        
-        try:
-            record_to_delete = await self.repo.get_record_by_id(record_id)
-            if not record_to_delete:
-                logger.warning(f"Tentativa de soft delete para record_id {record_id} falhou: Registro não encontrado.")
-                return {"status": "error", "message": "Registro não encontrado.", "code": 404}
-
-            if record_to_delete.is_deleted:
-                logger.info(f"Registro {record_id} já está marcado como deletado. Nenhuma ação necessária.")
-                return {"status": "success", "message": "Registro já estava marcado como deletado.", "code": 200}
-            
-            logger.info(f"Executando soft delete para o registro {record_id}.")
-            deleted_successfully = await self.repo.soft_delete_record(record_id)
-
-            if not deleted_successfully:
-                logger.error(f"Falha ao executar soft delete para o registro {record_id}.")
-                return {"status": "error", "message": "Falha ao deletar o registro.", "code": 500}
-            
-            logger.info(f"Registro {record_id} soft deletado com sucesso.")
-
-            if record_to_delete.dado_normalizado:
-                logger.info(f"Reavaliando Golden Record para dado normalizado '{record_to_delete.dado_normalizado}' após soft delete de {record_id}.")
-                all_related_records = await self.repo.get_all_records_by_normalized_data(
-                    dado_normalizado=record_to_delete.dado_normalizado,
-                    tipo_validacao=record_to_delete.tipo_validacao,
-                    include_deleted=False 
+            logger.warning(f"Aplicação '{app_name_log}' sem permissão para restaurar registro {record_id}.")
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="RESTAURACAO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "Sem permissão"},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Aplicação '{app_name_log}' sem permissão para restaurar registro {record_id}.",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
                 )
-                
-                if record_to_delete.is_golden_record:
-                    candidate_golden_record, best_score = self._elect_golden_record_candidate(all_related_records)
-                    new_golden_record_id: Optional[uuid.UUID] = None
-                    if candidate_golden_record:
-                        new_golden_record_id = candidate_golden_record.id
-                        logger.info(f"Novo Golden Record eleito para '{record_to_delete.dado_normalizado}': {new_golden_record_id}.")
-                    else:
-                        logger.warning(f"Nenhum novo Golden Record eleito para '{record_to_delete.dado_normalizado}' após soft delete. Todos os registros válidos foram deletados ou não existiam.")
-                    
-                    await self._update_database_golden_record_statuses(
-                        record_to_delete.dado_normalizado, 
-                        record_to_delete.tipo_validacao, 
-                        new_golden_record_id, 
-                        all_related_records 
+            )
+            return {"status": "error", "message": "Permissão negada: Sua API Key não tem privilégios para restaurar registros.", "status_code": 403}
+
+        try:
+            success = await self.repo.restore_record(record_id)
+            if success:
+                record = await self.repo.get_record_by_id(record_id)
+                await self.log_repo.add_log_entry(
+                    LogEntry(
+                        tipo_evento="RESTAURACAO",
+                        app_origem=app_name_log,
+                        usuario_operador=record.usuario_atualizacao if record else operator_id_log,
+                        detalhes_evento_json={"record_id": str(record_id), "status": "success"},
+                        status_operacao="SUCESSO",
+                        mensagem_log=f"Registro {record_id} restaurado com sucesso.",
+                        related_record_id=record_id,
+                        client_entity_id_afetado=client_entity_id_affected 
                     )
-                else:
-                    logger.info(f"Registro {record_id} não era o Golden Record. Reavaliação de GR concluída sem alteração de GR principal.")
-            else:
-                logger.info(f"Registro {record_id} não possui dado normalizado, pulando reavaliação de Golden Record.")
-            
-            return {"status": "success", "message": f"Registro {record_id} deletado logicamente com sucesso.", "code": 200}
-        except Exception as e:
-            logger.error(f"Erro inesperado durante soft delete para record_id {record_id}: {e}", exc_info=True)
-            return {"status": "error", "message": f"Erro interno ao deletar registro: {e}", "code": 500}
-
-
-    async def restore_record(self, app_info: Dict[str, Any], record_id: uuid.UUID) -> Dict[str, Any]:
-        """
-        Restaura um registro de validação que foi logicamente deletado.
-        Após a restauração, reavalia e reelege o Golden Record para o dado normalizado, se necessário.
-        """
-        logger.info(f"Recebida requisição de restauração para record_id: {record_id} pela aplicação: {app_info.get('app_name', 'Desconhecido')}...")
-
-        if not app_info.get("can_delete_records"): # Reutilizando a permissão de delete para restaurar
-            logger.warning(f"Tentativa de restauração não autorizada para record_id {record_id} por aplicação sem permissão: {app_info.get('app_name', 'Desconhecido')}.")
-            return {"status": "error", "message": "Não autorizado ou sem permissão para restaurar registros.", "code": 403}
-
-        try:
-            record_to_restore = await self.repo.get_record_by_id(record_id, include_deleted=True)
-            if not record_to_restore:
-                logger.warning(f"Tentativa de restauração para record_id {record_id} falhou: Registro não encontrado.")
-                return {"status": "error", "message": "Registro não encontrado.", "code": 404}
-
-            if not record_to_restore.is_deleted:
-                logger.info(f"Registro {record_id} já está ativo. Nenhuma ação necessária.")
-                return {"status": "success", "message": "Registro já estava ativo.", "code": 200}
-
-            logger.info(f"Executando restauração para o registro {record_id}.")
-            restored_successfully = await self.repo.restore_record(record_id)
-
-            if not restored_successfully:
-                logger.error(f"Falha ao executar restauração para o registro {record_id}.")
-                return {"status": "error", "message": "Falha ao restaurar o registro.", "code": 500}
-
-            logger.info(f"Registro {record_id} restaurado com sucesso.")
-
-            # Reavaliação do Golden Record após restauração
-            if record_to_restore.dado_normalizado:
-                logger.info(f"Reavaliando Golden Record para dado normalizado '{record_to_restore.dado_normalizado}' após restauração de {record_id}.")
-                all_related_records = await self.repo.get_all_records_by_normalized_data(
-                    dado_normalizado=record_to_restore.dado_normalizado,
-                    tipo_validacao=record_to_restore.tipo_validacao,
-                    include_deleted=False # Apenas registros ativos para eleição de GR
                 )
-                candidate_golden_record, best_score = self._elect_golden_record_candidate(all_related_records)
-                new_golden_record_id: Optional[uuid.UUID] = None
-                if candidate_golden_record:
-                    new_golden_record_id = candidate_golden_record.id
-                    logger.info(f"Novo Golden Record eleito para '{record_to_restore.dado_normalizado}': {new_golden_record_id}.")
-                else:
-                    logger.warning(f"Nenhum novo Golden Record eleito para '{record_to_restore.dado_normalizado}' após restauração.")
-                
-                await self._update_database_golden_record_statuses(
-                    record_to_restore.dado_normalizado, 
-                    record_to_restore.tipo_validacao, 
-                    new_golden_record_id, 
-                    all_related_records
-                )
+                return {"status": "success", "message": f"Registro {record_id} restaurado com sucesso.", "status_code": 200}
             else:
-                logger.info(f"Registro {record_id} não possui dado normalizado, pulando reavaliação de Golden Record após restauração.")
+                await self.log_repo.add_log_entry(
+                    LogEntry(
+                        tipo_evento="RESTAURACAO",
+                        app_origem=app_name_log,
+                        usuario_operador=operator_id_log,
+                        detalhes_evento_json={"record_id": str(record_id), "status": "failed", "reason": "Não encontrado ou não estava deletado"},
+                        status_operacao="FALHA",
+                        mensagem_log=f"Falha ao restaurar registro {record_id}: Não encontrado ou não estava soft-deletado.",
+                        related_record_id=record_id,
+                        client_entity_id_afetado=client_entity_id_affected 
+                    )
+                )
+                return {"status": "error", "message": f"Registro {record_id} não encontrado ou não estava soft-deletado.", "status_code": 404}
 
-            return {"status": "success", "message": f"Registro {record_id} restaurado com sucesso.", "code": 200}
         except Exception as e:
-            logger.error(f"Erro inesperado durante a restauração para record_id {record_id}: {e}", exc_info=True)
-            return {"status": "error", "message": f"Erro interno ao restaurar registro: {e}", "code": 500}
-
+            logger.error(f"Erro ao restaurar registro {record_id} para app '{app_name_log}': {e}", exc_info=True)
+            await self.log_repo.add_log_entry(
+                LogEntry(
+                    tipo_evento="ERRO_RESTAURACAO",
+                    app_origem=app_name_log,
+                    usuario_operador=operator_id_log,
+                    detalhes_evento_json={"record_id": str(record_id), "error": str(e)},
+                    status_operacao="FALHA",
+                    mensagem_log=f"Erro ao restaurar registro {record_id}: {e}",
+                    related_record_id=record_id,
+                    client_entity_id_afetado=client_entity_id_affected 
+                )
+            )
+            return {"status": "error", "message": INTERNAL_SERVER_ERROR_MESSAGE, "status_code": 500}
