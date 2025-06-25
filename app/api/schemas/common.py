@@ -1,191 +1,246 @@
 # app/api/schemas/common.py
-import logging
-import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from pydantic import BaseModel, Field, EmailStr, UUID4, validator 
+from typing import Optional, Dict, Any, List, Union
+from datetime import datetime, date, timezone
+import uuid # Necessário para uuid.UUID
 
-from fastapi import HTTPException, status
-from pydantic import BaseModel, Field, UUID4  # Importe UUID4 para tipos UUID
+# --- Schemas de Requisição (Input Models) ---
 
-# Importe o modelo ValidationRecord para ser usado na resposta de histórico
-# Assumimos que app.models.validation_record define o modelo ValidationRecord
-try:
-    from app.models.validation_record import ValidationRecord 
-except ImportError:
-    # Fallback ou tratamento de erro se ValidationRecord não puder ser importado
-    # Este bloco é apenas para robustez em ambientes de teste/sem DB completo
-    logger.warning("Não foi possível importar ValidationRecord de app.models.validation_record. As respostas de histórico podem estar incompletas.")
-    class ValidationRecord(BaseModel):
-        id: UUID4 = Field(default_factory=uuid.uuid4)
-        dado_original: str
-        dado_normalizado: Optional[str] = None
-        is_valido: bool
-        mensagem: str
-        origem_validacao: str
-        tipo_validacao: str
-        app_name: str
-        client_identifier: Optional[str] = None
-        validation_details: Dict[str, Any] = Field(default_factory=dict)
-        data_validacao: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        regra_negocio_codigo: Optional[str] = None
-        regra_negocio_descricao: Optional[str] = None
-        regra_negocio_tipo: Optional[str] = None
-        regra_negocio_parametros: Optional[Dict[str, Any]] = None
-        usuario_criacao: Optional[str] = None
-        usuario_atualizacao: Optional[str] = None
-        is_deleted: bool = False
-        deleted_at: Optional[datetime] = None
-        created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-        is_golden_record: Optional[bool] = False
-        golden_record_id: Optional[UUID4] = None
-        status_qualificacao: Optional[str] = None
-        last_enrichment_attempt_at: Optional[datetime] = None
-        client_entity_id: Optional[str] = None
-        class Config:
-            from_attributes = True
-            json_encoders = {
-                datetime: lambda dt: dt.isoformat(),
-                uuid.UUID: lambda u: str(u)
-            }
-            populate_by_name = True
+class PhoneValidationData(BaseModel):
+    """Schema para dados de validação de telefone."""
+    phone_number: str = Field(..., description="O número de telefone a ser validado.")
+    country_hint: Optional[str] = Field("BR", description="Sugestão de código de país (ISO 3166-1 alpha-2, ex: BR, US).")
 
+class CEPValidationData(BaseModel):
+    """Schema para dados de validação de CEP."""
+    cep: str = Field(..., description="O Código de Endereçamento Postal (CEP) a ser validado.")
 
-logger = logging.getLogger(__name__)
+class EmailValidationData(BaseModel):
+    """Schema para dados de validação de e-mail."""
+    email: EmailStr = Field(..., description="O endereço de e-mail a ser validado.")
 
-# --- Modelos de Requisição ---
-class UniversalValidationRequest(BaseModel):
+class CpfCnpjValidationData(BaseModel):
+    """Schema para dados de validação de CPF ou CNPJ."""
+    document: str = Field(..., description="O CPF ou CNPJ a ser validado.")
+
+class AddressValidationData(BaseModel):
+    """Schema para dados de validação de endereço completo."""
+    logradouro: str = Field(..., description="Nome da rua, avenida, etc.")
+    numero: Optional[Union[str, int]] = Field(None, description="Número do imóvel.")
+    complemento: Optional[str] = Field(None, description="Complemento do endereço.")
+    bairro: str = Field(..., description="Nome do bairro.")
+    cidade: str = Field(..., description="Nome da cidade.")
+    estado: str = Field(..., min_length=2, max_length=2, description="Sigla do estado (ex: SP, RJ).")
+    cep: Optional[str] = Field(None, description="CEP do endereço.")
+    pais: Optional[str] = Field("BR", description="País do endereço (ISO 3166-1 alpha-2).")
+
+class NomeValidationData(BaseModel):
+    """Schema para validação de nome completo."""
+    nome_completo: str = Field(..., description="O nome completo a ser validado.")
+
+class SexoValidationData(BaseModel):
+    """Schema para validação de gênero/sexo."""
+    sexo: str = Field(..., description="O gênero/sexo a ser validado (ex: Masculino, Feminino, Outro).")
+
+class RGValidationData(BaseModel):
+    """Schema para validação de RG."""
+    rg: str = Field(..., description="O número do RG a ser validado.")
+
+class DataNascimentoValidationData(BaseModel):
+    """Schema para validação de data de nascimento."""
+    data_nascimento: str = Field(..., description="A data de nascimento a ser validado no formato DD/MM/YYYY.")
+
+# NOVO: Modelo para validação de dados completos de uma pessoa
+class PersonDataModel(BaseModel):
     """
-    Modelo genérico para as requisições de validação.
-    `data` pode ser uma string (para telefone, email, cpf_cnpj)
-    ou um dicionário (para endereço).
+    Schema para dados completos de uma pessoa, usado na validação 'pessoa_completa'.
+    Contém todos os campos relevantes para o cadastro de uma pessoa.
     """
-    type: str  # Ex: "telefone", "cpf_cnpj", "email", "endereco"
-    data: Union[str, Dict[str, Any]]  # O dado a ser validado
-    client_identifier: Optional[str] = None  # Identificador do cliente/sistema
-    operator_identifier: Optional[str] = None  # Identificador do operador/usuário
+    nome: Optional[str] = Field(None, description="Nome completo da pessoa.")
+    idade: Optional[int] = Field(None, description="Idade da pessoa.")
+    cpf: Optional[str] = Field(None, description="Número do CPF.")
+    rg: Optional[str] = Field(None, description="Número do RG.")
+    data_nasc: Optional[str] = Field(None, description="Data de nascimento no formato DD/MM/YYYY.")
+    sexo: Optional[str] = Field(None, description="Gênero/sexo da pessoa.")
+    signo: Optional[str] = Field(None, description="Signo da pessoa.")
+    mae: Optional[str] = Field(None, description="Nome da mãe.")
+    pai: Optional[str] = Field(None, description="Nome do pai.")
+    email: Optional[EmailStr] = Field(None, description="Endereço de e-mail.")
+    senha: Optional[str] = Field(None, description="Senha (se aplicável, para validação de segurança).")
+    cep: Optional[str] = Field(None, description="CEP do endereço principal.")
+    endereco: Optional[str] = Field(None, description="Nome da rua/logradouro do endereço principal.")
+    numero: Optional[Union[str, int]] = Field(None, description="Número do imóvel no endereço principal.")
+    bairro: Optional[str] = Field(None, description="Bairro do endereço principal.")
+    cidade: Optional[str] = Field(None, description="Cidade do endereço principal.")
+    estado: Optional[str] = Field(None, min_length=2, max_length=2, description="Estado do endereço principal (sigla).")
+    telefone_fixo: Optional[str] = Field(None, description="Número de telefone fixo.")
+    celular: Optional[str] = Field(None, description="Número de telefone celular.")
+    altura: Optional[str] = Field(None, description="Altura da pessoa (ex: '1,75').")
+    peso: Optional[Union[int, float]] = Field(None, description="Peso da pessoa em kg.")
+    tipo_sanguineo: Optional[str] = Field(None, description="Tipo sanguíneo (ex: A+, AB-).")
+    cor: Optional[str] = Field(None, description="Cor da pessoa.")
 
     class Config:
-        json_schema_extra = {
-            "examples": [
-                {
-                    "type": "telefone",
-                    "data": "+5511987654321",
-                    "client_identifier": "api_client_example",
-                    "operator_identifier": "manual_test",
-                },
-                {
-                    "type": "endereco",
-                    "data": {
-                        "logradouro": "Avenida Paulista",
-                        "numero": "1578",
-                        "bairro": "Cerqueira César",
-                        "cidade": "São Paulo",
-                        "estado": "SP",
-                        "cep": "01310-200",
-                        "complemento": "Edifício Itau",
-                    },
-                    "client_identifier": "api_client_example",
-                    "operator_identifier": "system_integration",
-                },
-                {
-                    "type": "email",
-                    "data": "usuario@dominio.com.br",
-                    "client_identifier": "api_client_example",
-                    "operator_identifier": "batch_process",
-                },
-                {
-                    "type": "cpf_cnpj",
-                    "data": "12345678901",
-                    "client_identifier": "api_client_example",
-                    "operator_identifier": "form_submission",
-                },
-            ]
-        }
+        extra = "allow" # Permite campos adicionais que não estão explicitamente definidos aqui
+        from_attributes = True
 
+# ATUALIZADO: UniversalValidationRequest para incluir PersonDataModel na união
+class UniversalValidationRequest(BaseModel):
+    """
+    Modelo de requisição universal para o endpoint de validação.
+    'validation_type' especifica o tipo de dado a ser validado.
+    'data' contém o payload específico para o tipo de validação.
+    """
+    validation_type: str = Field(..., description="O tipo de validação a ser realizada (ex: 'cpf_cnpj', 'telefone', 'pessoa_completa').")
+    # A união deve listar os modelos mais específicos primeiro para um parsing mais eficiente
+    data: Union[
+        PersonDataModel, # Novo e mais abrangente, deve vir antes dos mais específicos se houver sobreposição
+        PhoneValidationData,
+        CEPValidationData,
+        EmailValidationData,
+        CpfCnpjValidationData,
+        AddressValidationData,
+        NomeValidationData,
+        SexoValidationData,
+        RGValidationData,
+        DataNascimentoValidationData,
+        Dict[str, Any] # Fallback genérico para qualquer outro dicionário
+    ] = Field(..., description="O payload de dados para a validação específica.")
+    client_identifier: Optional[str] = Field(None, description="Identificador do cliente ou sistema que está enviando a requisição.")
+    operator_id: Optional[str] = Field(None, description="Identificador do operador ou usuário que iniciou a ação.")
 
-# --- Modelos de Resposta ---
-
+# --- Schemas de Resposta (Output Models) ---
 
 class ValidationResponse(BaseModel):
     """
-    Modelo da resposta padronizada para as requisições de validação.
+    Modelo de resposta para o resultado de uma validação.
+    Inclui o dado original, normalizado, status de validade, mensagem,
+    detalhes da validação, e informações da regra de negócio aplicada.
     """
-    status: str  # "success" ou "error"
-    message: str  # Mensagem de status ou erro
-    is_valid: bool  # Se o dado é válido
-    validation_details: Dict[str, Any] = Field(default_factory=dict)  # Garante dicionário vazio por padrão
-    app_name: Optional[str] = None
-    client_identifier: Optional[str] = None
-    record_id: Optional[UUID4] = None  # Tipo correto para UUID
-    input_data_original: Optional[Union[str, Dict[str, Any]]] = None
-    input_data_cleaned: Optional[Union[str, Dict[str, Any]]] = None
-    tipo_validacao: Optional[str] = None
-    origem_validacao: Optional[str] = None
-    regra_negocio_codigo: Optional[str] = None
-    regra_negocio_descricao: Optional[str] = None
-    regra_negocio_tipo: Optional[str] = None
-    regra_negocio_parametros: Optional[Dict[str, Any]] = None  # Pode ser None
+    id: UUID4 = Field(..., description="ID único do registro de validação.")
+    dado_original: Union[str, Dict[str, Any]] = Field(..., description="O dado original fornecido para validação (pode ser JSON string ou dict).")
+    dado_normalizado: Union[str, Dict[str, Any]] = Field(..., description="O dado após a normalização (pode ser JSON string ou dict).")
+    is_valido: bool = Field(..., description="Indica se o dado é considerado válido.")
+    mensagem: str = Field(..., description="Mensagem descritiva do resultado da validação.")
+    origem_validacao: str = Field(..., description="Origem da validação (ex: 'phone_validator', 'cpf_cnpj_validator').")
+    tipo_validacao: str = Field(..., description="Tipo de dado que foi validado (ex: 'telefone', 'cpf_cnpj', 'pessoa_completa').")
+    app_name: str = Field(..., description="Nome da aplicação que realizou a validação.")
+    client_identifier: Optional[str] = Field(None, description="Identificador do cliente associado à requisição.")
+    short_id_alias: Optional[str] = Field(None, description="Um alias ou ID curto para o registro, se aplicável.")
+    validation_details: Dict[str, Any] = Field(default_factory=dict, description="Detalhes adicionais da validação, em formato JSON.")
+    data_validacao: datetime = Field(..., description="Timestamp da validação.")
+    regra_negocio_codigo: Optional[str] = Field(None, description="Código da regra de negócio aplicada.")
+    regra_negocio_descricao: Optional[str] = Field(None, description="Descrição da regra de negócio aplicada.")
+    regra_negocio_tipo: Optional[str] = Field(None, description="Tipo da regra de negócio (ex: 'Telefone - Formato', 'CPF - Dígitos Verificadores').")
+    regra_negocio_parametros: Optional[Dict[str, Any]] = Field(None, description="Parâmetros da regra de negócio, em formato JSON.")
+    is_golden_record: bool = Field(..., description="Indica se o registro é um Golden Record.")
+    golden_record_id: Optional[UUID4] = Field(None, description="ID do Golden Record associado, se aplicável.")
+    status_qualificacao: Optional[str] = Field(None, description="Status de qualificação do dado (ex: 'PENDING', 'QUALIFIED').")
+    last_enrichment_attempt_at: Optional[datetime] = Field(None, description="Timestamp da última tentativa de enriquecimento.")
+    client_entity_id: Optional[str] = Field(None, description="ID da entidade cliente afetada (para logs).")
+    status: str = Field("success", description="Status geral da resposta (success/error).")
+    message: str = Field("Validação concluída.", description="Mensagem geral da resposta.")
+    status_code: int = Field(200, description="Código HTTP de status da resposta.")
 
-    is_golden_record_for_this_transaction: Optional[bool] = None
-    golden_record_id_for_normalized_data: Optional[UUID4] = None  # Tipo correto para UUID
-    golden_record_data: Optional[Dict[str, Any]] = None
-    client_entity_id: Optional[str] = None
-    status_qualificacao: Optional[str] = None
-    last_enrichment_attempt_at: Optional[datetime] = None
+    @validator('data_validacao', 'last_enrichment_attempt_at', pre=True)
+    def parse_datetime_fields(cls, value):
+        if isinstance(value, str):
+            # Tenta parsear strings ISO formatadas
+            try:
+                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+            # Tenta parsear strings sem fuso horário (assumindo UTC)
+            try:
+                return datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        # Adicione tratamento para `date` se necessário
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+        return value
+
+    @validator('id', 'golden_record_id', pre=True)
+    def parse_uuid_fields(cls, value):
+        if isinstance(value, str):
+            try:
+                return uuid.UUID(value)
+            except ValueError:
+                pass
+        return value
 
     class Config:
         from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat(), uuid.UUID: lambda u: str(u)}
         populate_by_name = True
-        extra = "allow"  # Permite campos extras para maior flexibilidade na resposta
+        json_encoders = {
+            datetime: lambda dt: dt.isoformat(),
+            uuid.UUID: lambda u: str(u)
+        }
+        json_dumps_mode = 'json'
 
 
-class HistoryRecordResponse(ValidationRecord):
+class HistoryRecordResponse(BaseModel):
     """
-    Modelo para um único registro retornado na lista de histórico.
-    Herda de ValidationRecord, mas pode ser ajustado para incluir
-    apenas os campos relevantes para a visualização do histórico.
+    Modelo para representar um registro de histórico de validação.
+    Simplificado para exibição no histórico.
     """
-    # Não é necessário adicionar campos aqui se ValidationRecord já for suficiente.
-    # Se precisar de um subconjunto ou campos calculados, adicione aqui.
-    pass
+    id: UUID4 = Field(..., description="ID único do registro de validação.")
+    dado_original: Union[str, Dict[str, Any]] = Field(..., description="O dado original fornecido para validação.")
+    dado_normalizado: Union[str, Dict[str, Any]] = Field(..., description="O dado após a normalização.")
+    is_valido: bool = Field(..., description="Indica se o dado é válido.")
+    mensagem: str = Field(..., description="Mensagem do resultado.")
+    tipo_validacao: str = Field(..., description="Tipo de dado validado.")
+    data_validacao: datetime = Field(..., description="Timestamp da validação.")
+    app_name: str = Field(..., description="Nome da aplicação.")
+    client_identifier: Optional[str] = Field(None, description="Identificador do cliente.")
+    is_golden_record: bool = Field(..., description="É um Golden Record?")
+    short_id_alias: Optional[str] = Field(None, description="Alias ou ID curto.")
+    is_deleted: bool = Field(False, description="Indica se o registro foi soft-deletado.")
+    deleted_at: Optional[datetime] = Field(None, description="Timestamp do soft delete.")
+    created_at: datetime = Field(..., description="Timestamp de criação do registro.")
+    updated_at: datetime = Field(..., description="Timestamp da última atualização do registro.")
+    client_entity_id: Optional[str] = Field(None, description="ID da entidade cliente afetada (para logs).")
 
+    @validator('data_validacao', 'deleted_at', 'created_at', 'updated_at', pre=True)
+    def parse_datetime_history_fields(cls, value):
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value.replace('Z', '+00:00'))
+            except ValueError:
+                pass
+            try:
+                return datetime.strptime(value, '%Y-%m-%dT%H:%M:%S.%f').replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+        return value
 
-class HistoryResponse(BaseModel):
-    """
-    Modelo da resposta padronizada para as requisições de histórico.
-    """
-    status: str  # "success" ou "error"
-    message: str  # Mensagem de status ou erro
-    data: List[HistoryRecordResponse] = Field(default_factory=list)  # Lista de registros de histórico
+    @validator('id', pre=True)
+    def parse_uuid_history_fields(cls, value):
+        if isinstance(value, str):
+            try:
+                return uuid.UUID(value)
+            except ValueError:
+                pass
+        return value
 
     class Config:
         from_attributes = True
-        json_encoders = {datetime: lambda dt: dt.isoformat(), uuid.UUID: lambda u: str(u)}
         populate_by_name = True
+        json_encoders = {
+            datetime: lambda dt: dt.isoformat(),
+            uuid.UUID: lambda u: str(u)
+        }
+        json_dumps_mode = 'json'
 
+# NOVO: Modelos para requisições de soft-delete e restore
+class SoftDeleteRequest(BaseModel):
+    record_id: UUID4 = Field(..., description="ID do registro a ser soft-deletado.")
+    reason: Optional[str] = Field(None, description="Motivo para o soft-delete.")
+    operator_id: Optional[str] = Field(None, description="ID do operador que solicitou o soft-delete.")
 
-# --- Funções de Tratamento de Erro Comuns ---
-def handle_service_response_error(result: Dict[str, Any]):
-    """
-    Função auxiliar para tratar respostas de erro do ValidationService.
-    Levanta uma HTTPException apropriada.
-    """
-    status_code = result.get("code", status.HTTP_500_INTERNAL_SERVER_ERROR)
-    message = result.get("message", "Ocorreu um erro desconhecido no serviço de validação.")
-    
-    # Loga o erro com detalhes para depuração
-    logger.error(f"Erro no serviço de validação: Status {status_code}, Mensagem: {message}, Detalhes: {result.get('validation_details')}")
-
-    raise HTTPException(
-        status_code=status_code,
-        detail=message
-    )
-
-# --- Fim do módulo common.py ---
-# Este módulo define os modelos de requisição e resposta para a API de validação,
-# além de funções auxiliares para tratamento de erros e formatação de dados.
-# Certifique-se de que este módulo seja importado corretamente nos endpoints
-# que utilizam esses modelos e funções.
-# --- Fim do módulo common.py ---
+class RestoreRequest(BaseModel):
+    record_id: UUID4 = Field(..., description="ID do registro a ser restaurado.")
+    reason: Optional[str] = Field(None, description="Motivo para a restauração.")
+    operator_id: Optional[str] = Field(None, description="ID do operador que solicitou a restauração.")

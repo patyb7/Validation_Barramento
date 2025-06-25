@@ -18,17 +18,14 @@ class DatabaseManager:
     3. Forneça um método conveniente para adquirir conexões do pool.
     4. Seja thread-safe (devido à natureza do singleton e operações assíncronas).
     """
-    
     # Atributos de classe para o padrão Singleton e o pool de conexões
     _instance: Optional["DatabaseManager"] = None
     _pool: Optional[asyncpg.Pool] = None
     _db_url: Optional[str] = None
-    
     # Atributo de classe para o logger, garantindo que ele esteja sempre disponível
     # antes que qualquer método da instância tente acessá-lo.
     # Usamos o logger definido acima para este módulo.
     logger: logging.Logger = logger
-
     # O método __new__ é chamado antes do __init__ para controlar a criação da instância.
     def __new__(cls, *args, **kwargs) -> "DatabaseManager":
         """
@@ -42,7 +39,6 @@ class DatabaseManager:
             # de atributos que só devem ocorrer uma vez.
             cls._instance._initialized = False 
         return cls._instance
-
     def __init__(self):
         """
         Inicializador da instância. Em um singleton, este método pode ser chamado

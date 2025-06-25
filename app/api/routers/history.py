@@ -1,64 +1,71 @@
+# app/routers/history.py
 # app/api/routers/history.py
-"""
-Validation_Barramento/app/api/routers/history.py
-Este módulo define o endpoint de histórico de validação da API,
-permitindo a consulta dos registros de validação.
-"""
+
 import logging
-from typing import List, Optional
-from fastapi import APIRouter, Query, Depends, HTTPException, status
-
-# Importa os modelos Pydantic e a função de tratamento de erro do common.py
-from app.api.schemas.common import HistoryRecordResponse, HistoryResponse, handle_service_response_error
-from app.api.dependencies import get_validation_service_instance, VALIDATION_SERVICE_NOT_READY_MESSAGE
-from app.services.validation_service import ValidationService # Para type hinting
-
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, status
+from typing import List, Dict, Any
+from app.api.schemas.common import HistoryRecordResponse # Importa o modelo de resposta para histórico
+from app.api.dependencies import get_validation_service, get_api_key_info # Importa dependências
+from app.services.validation_service import ValidationService
 logger = logging.getLogger(__name__)
 
-# CORREÇÃO: O prefixo "/api/v1" já é adicionado em main.py
-router = APIRouter(tags=["History"])
+router = APIRouter()
 
-# --- Endpoint de Histórico ---
-@router.get("/history",
-    response_model=HistoryResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Obtém o histórico de validações",
-    description="Retorna uma lista dos últimos registros de validação, com opções de limite e inclusão de registros deletados."
+@router.get(
+    "/history",
+    response_model=Dict[str, Any], # Pode ser HistoryResponse ou um Dict[str, Any] conforme a necessidade
+    summary="Obter Histórico de Validações",
+    tags=["Histórico"]
 )
-async def get_history(
-    limit: int = Query(10, ge=1, le=100, description="Número máximo de registros a retornar."),
-    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados no histórico."),
-    val_service: ValidationService = Depends(get_validation_service_instance)
-):
+async def get_validation_history_endpoint(
+    request: Request, # Adicionado Request para acessar app.state
+    limit: int = Query(10, ge=1, le=100, description="Número máximo de registros a serem retornados."),
+    include_deleted: bool = Query(False, description="Incluir registros logicamente deletados."),
+    validation_service: ValidationService = Depends(get_validation_service)
+) -> Dict[str, Any]:
     """
-    Retorna os últimos N registros de validação do sistema,
-    com a opção de incluir registros que foram logicamente deletados.
+    Retorna o histórico de validações para a aplicação associada à API Key.
+    Acesso restrito apenas a API Keys com permissão.
     """
-    if val_service is None:
-        logger.critical("ValidationService não inicializado no momento da requisição /history. (Erro de inicialização da dependência)")
+    api_key_str = request.headers.get("x-api-key") # Obtém a API Key do header
+    
+    if not api_key_str:
+        logger.warning("Tentativa de acesso ao histórico sem API Key.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key ausente."
+        )
+
+    # A validação da API Key e obtenção do app_info já é feita no middleware.
+    # O app_info está disponível em request.state.app_info
+    app_info = request.state.app_info if hasattr(request.state, 'app_info') else None
+    
+    if not app_info or not app_info.get("is_active"):
+        logger.warning(f"Acesso não autorizado ao histórico com API Key inválida ou inativa.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key inválida ou não autorizada."
+        )
+
+    # Verifica se a aplicação tem permissão para ler histórico.
+    # Assumimos que 'get_api_key_info' já retorna essa permissão.
+    # Ou podemos adicionar um campo 'can_read_history' na api_keys.json
+    if not app_info.get("can_read_history", True): # Assume True por padrão se não definido
+        logger.warning(f"Aplicação '{app_info.get('app_name')}' sem permissão para acessar o histórico.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permissão negada: Sua API Key não tem privilégios para acessar o histórico."
+        )
+
+    try:
+        # Chama o serviço para obter o histórico
+        history_response = await validation_service.get_validation_history(api_key_str, limit, include_deleted)
+        return history_response
+    except HTTPException as e:
+        raise e # Re-lança exceções HTTP específicas do serviço
+    except Exception as e:
+        logger.error(f"Erro inesperado ao obter histórico de validações: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=VALIDATION_SERVICE_NOT_READY_MESSAGE
+            detail="Ocorreu um erro inesperado ao recuperar o histórico."
         )
-    
-    # Chama o serviço de validação para obter o histórico
-    records = await val_service.get_validation_history(
-        limit=limit,
-        include_deleted=include_deleted
-    )
-
-    # Converte os registros para o formato de resposta do Pydantic
-    # O Pydantic ValidationRecord já foi corrigido para aceitar UUIDs e JSONB
-    # então HistoryRecordResponse (que herda de ValidationRecord) deve funcionar.
-    history_records_response = [HistoryRecordResponse.model_validate(record.model_dump()) for record in records]
-    
-    return HistoryResponse(
-        status="success",
-        message="Histórico obtido com sucesso.",
-        data=history_records_response
-    )
-
-# --- Registro do Router ---
-# Este router deve ser incluído no app principal em main.py.
-# Exemplo de inclusão:
-# app.include_router(history_router, prefix="/api/v1", tags=["History"])

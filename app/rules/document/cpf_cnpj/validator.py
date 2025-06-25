@@ -7,22 +7,21 @@ from app.rules.base import BaseValidator # Ensure this import is correct
 
 logger = logging.getLogger(__name__)
 
-# Códigos de Regra específicos para validação de CPF/CNPJ
-VAL_DOC001 = "VAL_DOC001" # Documento válido e ativo
-VAL_DOC002 = "VAL_DOC002" # Formato de documento inválido (não é CPF nem CNPJ)
-VAL_DOC003 = "VAL_DOC003" # CPF/CNPJ com dígitos verificadores inválidos
-VAL_DOC004 = "VAL_DOC004" # CPF/CNPJ com todos os dígitos iguais (ex: 111.111.111-11)
-VAL_DOC005 = "VAL_DOC005" # Documento válido (checksum), mas inativo/suspenso na base cadastral
-VAL_DOC006 = "VAL_DOC006" # Documento válido (checksum), mas não encontrado na base cadastral
-VAL_DOC007 = "VAL_DOC007" # Input vazio ou tipo inválido
-
-
-class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
+class CpfCnpjValidator(BaseValidator):
     """
     Validador para documentos CPF e CNPJ.
     Realiza a validação do formato e checksum, e simula uma consulta
     a uma base de dados cadastral de clientes para verificar o status.
     """
+    # Códigos de Regra específicos para validação de CPF/CNPJ
+    # Definidos como atributos de CLASSE para acesso via self.RN_DOCxxx
+    RN_DOC001 = "RN_DOC001" # Documento válido e ativo
+    RN_DOC002 = "RN_DOC002" # Formato de documento inválido (não é CPF nem CNPJ, ou comprimento incorreto)
+    RN_DOC003 = "RN_DOC003" # CPF/CNPJ com dígitos verificadores inválidos (checksum)
+    RN_DOC004 = "RN_DOC004" # CPF/CNPJ com todos os dígitos iguais (ex: 111.111.111-11)
+    RN_DOC005 = "RN_DOC005" # Documento válido (checksum), mas inativo/suspenso na base cadastral
+    RN_DOC006 = "RN_DOC006" # Documento válido (checksum), mas não encontrado na base cadastral
+    RN_DOC007 = "RN_DOC007" # Input vazio ou tipo inválido (não string, ou string vazia)
 
     def __init__(self):
         super().__init__(origin_name="CpfCnpjValidator") # Initialize BaseValidator
@@ -39,7 +38,7 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
             "11111111111111": {"name": "CNPJ Sequencial Inválido", "status_receita_federal": None, "is_active": False}, # Exemplo de CNPJ inválido por algoritmo
         }
 
-    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # <--- MÉTODO PADRONIZADO 'validate'
+    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # MÉTODO PADRONIZADO 'validate'
         """
         Valida um número de CPF ou CNPJ, verificando formato, checksum e consultando
         uma base de dados cadastral simulada.
@@ -59,16 +58,17 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
                             - "business_rule_applied": Detalhes da regra de negócio aplicada.
         """
         document_number = data
-        logger.info(f"Iniciando validação de documento: {document_number[:5]}...")
+        logger.info(f"Iniciando validação de documento: {document_number[:5] if isinstance(document_number, str) and len(document_number) > 5 else document_number}...")
 
         # 1. Verificação de Input Vazio ou Inválido
         if not isinstance(document_number, str) or not document_number.strip():
             return self._format_result(
                 is_valid=False,
+                dado_original=document_number, # Adicionado
                 dado_normalizado=None,
                 mensagem="Documento vazio ou tipo inválido.",
                 details={"input_original": document_number},
-                business_rule_applied={"code": VAL_DOC007, "type": "cpf_cnpj"}
+                business_rule_applied={"code": self.RN_DOC007, "type": "Documento - Validação Primária", "name": "Input de Documento Inválido"}
             )
 
         normalized_document = self._normalize_document(document_number)
@@ -83,7 +83,8 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
         customer_name = None
         
         validation_message = "Documento inválido."
-        business_rule_code = VAL_DOC002 # Default for invalid format
+        business_rule_code = self.RN_DOC002 # Default for invalid format
+        logger.debug(f"Documento normalizado: {normalized_document}, é CPF: {is_cpf}, é CNPJ: {is_cnpj}")
         
         details = {
             "document_type": None,
@@ -93,7 +94,6 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
             "customer_name": None,
             "reason": []
         }
-
         if is_cpf:
             document_type = "CPF"
             is_valid_format = True
@@ -101,14 +101,14 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
             
             if len(set(normalized_document)) == 1:
                 validation_message = "CPF inválido: todos os dígitos são iguais."
-                business_rule_code = VAL_DOC004
+                business_rule_code = self.RN_DOC004
                 details["reason"].append("all_digits_same")
             else:
                 is_valid_checksum = self._validate_cpf_checksum(normalized_document)
                 details["is_valid_checksum"] = is_valid_checksum
                 if not is_valid_checksum:
                     validation_message = "CPF com dígitos verificadores inválidos."
-                    business_rule_code = VAL_DOC003
+                    business_rule_code = self.RN_DOC003
                     details["reason"].append("invalid_cpf_checksum")
                 
         elif is_cnpj:
@@ -118,30 +118,32 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
 
             if len(set(normalized_document)) == 1:
                 validation_message = "CNPJ inválido: todos os dígitos são iguais."
-                business_rule_code = VAL_DOC004
+                business_rule_code = self.RN_DOC004
                 details["reason"].append("all_digits_same")
             else:
                 is_valid_checksum = self._validate_cnpj_checksum(normalized_document)
                 details["is_valid_checksum"] = is_valid_checksum
                 if not is_valid_checksum:
                     validation_message = "CNPJ com dígitos verificadores inválidos."
-                    business_rule_code = VAL_DOC003
+                    business_rule_code = self.RN_DOC003
                     details["reason"].append("invalid_cnpj_checksum")
         else:
-            validation_message = "Formato de documento inválido (não é CPF nem CNPJ)."
-            business_rule_code = VAL_DOC002
+            validation_message = "Formato de documento inválido (não é CPF nem CNPJ, ou comprimento incorreto)."
+            business_rule_code = self.RN_DOC002
             details["reason"].append("invalid_document_format")
             
         # If format or checksum are invalid, no need to consult the database
         if not is_valid_format or not is_valid_checksum:
             return self._format_result(
                 is_valid=False,
+                dado_original=document_number, # Adicionado
                 dado_normalizado=normalized_document,
                 mensagem=validation_message,
                 details=details,
-                business_rule_applied={"code": business_rule_code, "type": "cpf_cnpj"}
+                business_rule_applied={"code": business_rule_code, "type": "Documento - Validação Primária", "name": "Formato/Checksum Inválido"}
             )
-
+        # Se o formato e o checksum forem válidos, prossegue para a consulta na base de dados
+        logger.info(f"{document_type} com formato e checksum válidos. Consultando base de dados cadastral...")
         # Simulate querying the customer database
         logger.debug(f"Consultando base de clientes para {document_type}: {normalized_document}")
         customer_data = self.simulated_customer_database.get(normalized_document)
@@ -150,32 +152,31 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
             status_cadastro = customer_data.get("status_receita_federal")
             is_active_in_db = customer_data.get("is_active", False)
             customer_name = customer_data.get("name")
-
             details["status_receita_federal"] = status_cadastro
             details["is_active_in_database"] = is_active_in_db
             details["customer_name"] = customer_name
-
             if is_active_in_db:
                 validation_message = f"{document_type} válido e ativo na base cadastral."
                 is_valid = True
-                business_rule_code = VAL_DOC001
+                business_rule_code = self.RN_DOC001
             else:
                 validation_message = f"{document_type} válido, mas inativo/suspenso na base cadastral (status: {status_cadastro})."
                 is_valid = False
-                business_rule_code = VAL_DOC005
+                business_rule_code = self.RN_DOC005
                 details["reason"].append("document_inactive_in_database")
         else:
             validation_message = f"{document_type} válido (checksum), mas não encontrado na base cadastral."
             is_valid = False
-            business_rule_code = VAL_DOC006
+            business_rule_code = self.RN_DOC006
             details["reason"].append("document_not_found_in_database")
             
         return self._format_result(
             is_valid=is_valid,
+            dado_original=document_number, # Adicionado
             dado_normalizado=normalized_document,
             mensagem=validation_message,
             details=details,
-            business_rule_applied={"code": business_rule_code, "type": "cpf_cnpj"}
+            business_rule_applied={"code": business_rule_code, "type": "Documento - Validação Primária", "name": "Validação Final de Documento"}
         )
 
     def _normalize_document(self, document: str) -> str:
@@ -187,6 +188,10 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
     def _validate_cpf_checksum(self, cpf: str) -> bool:
         """Valida o checksum de um CPF."""
         if not re.fullmatch(r'\d{11}', cpf):
+            return False
+
+        # Verifica se todos os dígitos são iguais (ex: '11111111111')
+        if len(set(cpf)) == 1:
             return False
 
         def calculate_digit(cpf_part: str, weight_start: int) -> int:
@@ -209,6 +214,10 @@ class CpfCnpjValidator(BaseValidator): # Inherit from BaseValidator
     def _validate_cnpj_checksum(self, cnpj: str) -> bool:
         """Valida o checksum de um CNPJ."""
         if not re.fullmatch(r'\d{14}', cnpj):
+            return False
+        
+        # Verifica se todos os dígitos são iguais (ex: '11111111111111')
+        if len(set(cnpj)) == 1:
             return False
 
         def calculate_digit(cnpj_part: str, weights: list) -> int:

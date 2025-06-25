@@ -1,169 +1,176 @@
-# app/rules/address/address_validator.py
-
 import logging
+import re
 from typing import Dict, Any, Optional
-
-from app.rules.base import BaseValidator # Importa a classe BaseValidator
-from app.rules.address.cep.validator import CEPValidator # Importa o CEPValidator
+from app.rules.base import BaseValidator
+from app.rules.address.cep.validator import CEPValidator # Importar o CEPValidator
 
 logger = logging.getLogger(__name__)
 
-# Códigos de Regra específicos para validação de Endereço (Mantidos para clareza, mas as de CEP vêm do CEPValidator)
-VAL_END001 = "VAL_END001" # Endereço válido e completo
-VAL_END002 = "VAL_END002" # Endereço inválido (erros estruturais, campos obrigatórios)
-VAL_END003 = "VAL_END003" # Input vazio ou tipo inválido
-VAL_END004 = "VAL_END004" # CEP não informado ou inválido para consulta
-VAL_END005 = "VAL_END005" # Erro na normalização/formatação
+class AddressRuleCodes:
+    RN_ADDR001 = "RN_ADDR001"  # Endereço válido e completo
+    RN_ADDR002 = "RN_ADDR002"  # Endereço com campos obrigatórios ausentes
+    RN_ADDR003 = "RN_ADDR003"  # CEP inválido (formato ou não encontrado) - tratado por CEPValidator
+    RN_ADDR004 = "RN_ADDR004"  # Endereço não correspondente ao CEP (simulado)
+    RN_ADDR005 = "RN_ADDR005"  # Endereço válido, mas com inconsistências leves (ex: número não numérico)
+    RN_ADDR006 = "RN_ADDR006"  # Endereço não encontrado na base externa (simulado)
+    RN_ADDR007 = "RN_ADDR007"  # Input vazio ou tipo inválido (não dicionário ou vazio)
 
 class AddressValidator(BaseValidator):
     """
-    Validador de endereços com suporte a validação de CEP e normalização.
-    Utiliza o CEPValidator para a parte específica do CEP.
+    Validador composto para dados de endereço.
+    Valida a presença de campos obrigatórios e, opcionalmente, a consistência
+    com um CEP validado (se fornecido).
     """
-
-    def __init__(self, cep_validator: CEPValidator):
+    def __init__(self, cep_validator: CEPValidator): # Adicionado cep_validator
         super().__init__(origin_name="address_validator")
-        self.cep_validator = cep_validator
+        self.cep_validator = cep_validator # Armazenar a instância do CEPValidator
         logger.info("AddressValidator inicializado.")
 
-    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]:
+    async def validate(self, data: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """
-        Valida um dicionário de dados de endereço, implementando o método abstrato 'validate'.
+        Valida um dicionário contendo dados de endereço.
 
         Args:
-            data (Any): Os dados do endereço a serem validados. Esperado um dicionário,
-                        ex: {'logradouro': '...', 'numero': '...', 'cep': '...'}.
-            **kwargs: Parâmetros adicionais que podem ser passados (mantido para compatibilidade).
+            data (Dict[str, Any]): O dicionário de dados do endereço (logradouro, numero, bairro, cidade, estado, cep).
+            **kwargs: Parâmetros adicionais (compatibilidade com BaseValidator).
 
         Returns:
-            Dict[str, Any]: Um dicionário com o resultado da validação, contendo:
-                            - "is_valid" (bool): Se o endereço é considerado válido.
-                            - "dado_normalizado" (str): O endereço normalizado em uma string formatada.
-                            - "mensagem" (str): Mensagem explicativa do resultado.
-                            - "origem_validacao" (str): Fonte da validação.
-                            - "details" (dict): Detalhes adicionais (validação de CEP, etc.).
-                            - "business_rule_applied" (dict): Detalhes da regra de negócio aplicada.
+            Dict[str, Any]: Um dicionário com o resultado da validação padronizado.
         """
-        # Garante que 'data' é um dicionário para o restante da lógica
-        if not isinstance(data, dict):
+        original_address_data = data # Captura o dado original
+        logger.info(f"Iniciando validação de endereço: {original_address_data}...")
+
+        # 1. Verificação de Input Vazio ou Inválido
+        if not isinstance(original_address_data, dict) or not original_address_data:
             return self._format_result(
                 is_valid=False,
+                dado_original=original_address_data,
                 dado_normalizado=None,
-                mensagem="Dados de endereço esperados como dicionário, mas recebido tipo inválido.",
-                details={"input_original": data},
-                business_rule_applied={"code": VAL_END003, "type": "endereco"}
+                mensagem="Endereço vazio ou tipo inválido. Esperado um dicionário não vazio.",
+                details={"input_original": original_address_data},
+                business_rule_applied={"code": AddressRuleCodes.RN_ADDR007, "type": "Endereço - Validação Primária", "name": "Input de Endereço Vazio ou Inválido"}
             )
 
-        address_data = data.copy() # Use a cópia para evitar modificar o input original
-        original_address_data = address_data.copy()
+        # Campos esperados e obrigatórios
+        required_fields = ["logradouro", "numero", "bairro", "cidade", "estado", "cep"]
+        missing_fields = [f for f in required_fields if not original_address_data.get(f) or not str(original_address_data.get(f)).strip()]
+
+        is_valid = True
+        message = "Endereço válido."
+        business_rule_code = AddressRuleCodes.RN_ADDR001
         
-        # Prepara o dicionário de detalhes
         details = {
             "input_original": original_address_data,
-            "cep_validation": {},
-            "normalization_status": "not_attempted",
-            "required_fields_check": {}
+            "missing_fields": missing_fields,
+            "normalized_address": {},
+            "inconsistencies": [],
+            "simulated_consistency": True, # Para simular a consistência com o CEP
+            "reason": []
         }
-        
-        is_valid = False
-        message = "Endereço inválido: falha na validação estrutural."
-        normalized_address = None
-        validation_code = VAL_END002
 
-        # 1. Verificação de Input Vazio (para o dicionário)
-        if not address_data:
-            message = "Dados de endereço vazios. Esperado um dicionário não vazio."
-            validation_code = VAL_END003
-            return self._format_result(False, None, message, details, {"code": validation_code})
-
-        # 2. Validação do CEP usando CEPValidator
-        cep_input = address_data.get("cep")
-        if cep_input:
-            cep_validation_result = await self.cep_validator.validate(cep_input)
-            details["cep_validation"] = cep_validation_result # Adiciona todos os detalhes do CEP
-            
-            if not cep_validation_result.get("is_valid"):
-                message = f"Endereço inválido: CEP inválido ou com erro. {cep_validation_result.get('message', '')}"
-                # Acessa a constante VAL_CEP004 da instância do cep_validator
-                validation_code = cep_validation_result.get("business_rule_applied", {}).get("code", self.cep_validator.VAL_CEP004)
-                return self._format_result(False, None, message, details, {"code": validation_code})
-            
-            # Acessa a constante VAL_CEP002 da instância do cep_validator
-            if cep_validation_result.get("business_rule_applied", {}).get("code") == self.cep_validator.VAL_CEP002:
-                message = "Endereço: CEP válido, mas não encontrado na base externa. Validação prossegue, mas pode ser incompleta."
-                logger.warning(f"AddressValidation: {message} para CEP {cep_input}")
-            else:
-                if cep_validation_result.get("details", {}).get("external_api_data"):
-                    address_data.update(cep_validation_result["details"]["external_api_data"])
-                    details["normalization_status"] = "enriched_by_cep_api"
-                    logger.debug(f"Endereço enriquecido com dados do CEP API: {address_data}")
-        else:
-            message = "Endereço inválido: CEP não informado. Não é possível validar ou enriquecer sem o CEP."
-            validation_code = VAL_END004
-            return self._format_result(False, None, message, details, {"code": validation_code})
-
-
-        # 3. Verificação de Campos Obrigatórios (após possível enriquecimento pelo CEP)
-        required_fields_for_full_address = [
-            "logradouro", "numero", "bairro", "localidade", "uf", "cep"
-        ]
-        missing_fields = [field for field in required_fields_for_full_address if not address_data.get(field)]
-        
         if missing_fields:
-            message = f"Endereço inválido: Campos obrigatórios ausentes: {', '.join(missing_fields)}."
-            details["required_fields_check"] = {"status": "missing", "missing_fields": missing_fields}
-            validation_code = VAL_END002 # Erro estrutural
-            return self._format_result(False, None, message, details, {"code": validation_code})
-        else:
-            details["required_fields_check"] = {"status": "ok"}
-
-
-        # 4. Normalização e Formatação do Endereço Completo
-        try:
-            uf = address_data.get("uf", "").upper()
-            if len(uf) != 2:
-                message = "Endereço inválido: UF (Estado) com formato inválido."
-                validation_code = VAL_END002
-                return self._format_result(False, None, message, details, {"code": validation_code})
-
-            # Usa o método _clean_cep do cep_validator para garantir consistência
-            normalized_cep_for_format = self.cep_validator._clean_cep(address_data.get('cep', ''))
-
-            normalized_address = (
-                f"{address_data.get('logradouro', '')}, {address_data.get('numero', '')}"
-                f"{' - ' + address_data.get('complemento') if address_data.get('complemento') else ''}"
-                f" - {address_data.get('bairro', '')}"
-                f", {address_data.get('localidade', '')}-{uf}"
-                f", CEP {normalized_cep_for_format}"
-            ).strip()
-            details["normalization_status"] = "formatted_to_canonical"
-            
-            is_valid = True
-            message = "Endereço válido e normalizado."
-            validation_code = VAL_END001
-
-        except Exception as e:
             is_valid = False
-            message = f"Erro na normalização/formatação do endereço: {e}."
-            validation_code = VAL_END005
-            logger.error(f"Erro na normalização do endereço {original_address_data}: {e}", exc_info=True)
+            message = f"Campos obrigatórios ausentes: {', '.join(missing_fields)}."
+            business_rule_code = AddressRuleCodes.RN_ADDR002
+            details["reason"].append("missing_required_fields")
+            
+            # Se faltam campos obrigatórios, retorna imediatamente
+            return self._format_result(
+                is_valid=False,
+                dado_original=original_address_data,
+                dado_normalizado=None,
+                mensagem=message,
+                details=details,
+                business_rule_applied={"code": business_rule_code, "type": "Endereço - Validação Primária", "name": "Campos Obrigatórios Ausentes"}
+            )
+
+        # Normaliza e valida campos individuais (ex: limpeza, tipo)
+        normalized_address = {}
+        for field in required_fields:
+            value = str(original_address_data[field]).strip()
+            normalized_address[field] = value
+            # Exemplo de validação de campo individual (não exaustivo)
+            if field == "numero" and not value.replace('-', '').isalnum(): # Aceita números e hífens
+                details["inconsistencies"].append(f"Número de endereço contém caracteres inválidos: {value}")
+                details["reason"].append("invalid_address_number_chars")
+                is_valid = False # Considera uma inconsistência leve, mas pode ser fatal dependendo da regra
+                business_rule_code = AddressRuleCodes.RN_ADDR005
+            
+        details["normalized_address"] = normalized_address
+
+        if not is_valid: # Se houve inconsistências nos campos normalizados
+             return self._format_result(
+                is_valid=False,
+                dado_original=original_address_data,
+                dado_normalizado=normalized_address,
+                mensagem="Endereço válido, mas com inconsistências leves em campos.",
+                details=details,
+                business_rule_applied={"code": business_rule_code, "type": "Endereço - Validação Leve", "name": "Inconsistências em Campos de Endereço"}
+            )
+
+        # Validação do CEP usando o CEPValidator injetado
+        cep_validation_result = await self.cep_validator.validate(normalized_address["cep"])
+        details["cep_validation_result"] = cep_validation_result
+
+        if not cep_validation_result["is_valid"]:
+            # Se o CEP for inválido pelo CEPValidator, o endereço completo também é inválido
+            message = f"Endereço inválido: {cep_validation_result['mensagem']}"
+            business_rule_code = cep_validation_result["business_rule_applied"]["code"] # Usa o código do CEPValidator
+            details["reason"].append("cep_invalidated_by_sub_validator")
+            is_valid = False
+            
+            return self._format_result(
+                is_valid=is_valid,
+                dado_original=original_address_data,
+                dado_normalizado=normalized_address,
+                mensagem=message,
+                details=details,
+                business_rule_applied={"code": business_rule_code, "type": "Endereço - Validação de Dependência", "name": message}
+            )
+
+        # Simular validação de consistência do endereço com o CEP
+        # Em um cenário real, isso envolveria uma consulta a um serviço de geocodificação ou API de CEP avançada
+        # que retornaria o logradouro, bairro, cidade, estado para o CEP fornecido
+        # e compararia com os dados recebidos.
+
+        # CEP fictício que "não corresponde" ou "não é encontrado na base externa"
+        if normalized_address["cep"] == "07273-120" or normalized_address["cep"] == "12345-000":
+            details["simulated_consistency"] = False
+            message = "Endereço: CEP válido, mas não encontrado na base externa. Validação prossegue, mas pode ser incompleta."
+            business_rule_code = AddressRuleCodes.RN_ADDR006
+            details["reason"].append("cep_not_found_in_external_db")
+            is_valid = True # Considera válido, mas com aviso (WARNING)
+            logger.warning(f"AddressValidation: {message} para CEP {normalized_address['cep']}")
+        elif normalized_address["cep"] == "99999-999":
+            details["simulated_consistency"] = False
+            message = "Endereço: CEP válido, mas não correspondente aos demais campos do endereço (simulado)."
+            business_rule_code = AddressRuleCodes.RN_ADDR004
+            details["reason"].append("address_cep_inconsistency")
+            is_valid = False # Inconsistência grave
+        
+        # Conclusão da validação
+        final_is_valid = is_valid and (not details["inconsistencies"]) and details["simulated_consistency"]
+        
+        if not final_is_valid:
+            if not details["simulated_consistency"]: # Se a inconsistência grave for o CEP
+                 final_message = message # A mensagem já foi definida acima
+                 final_business_rule = {"code": business_rule_code, "type": "Endereço - Validação de Consistência", "name": final_message}
+            elif details["inconsistencies"]: # Se for por inconsistências leves já tratadas
+                 final_message = "Endereço válido, mas com inconsistências leves em campos."
+                 final_business_rule = {"code": AddressRuleCodes.RN_ADDR005, "type": "Endereço - Validação Leve", "name": final_message}
+            else:
+                 final_message = "Endereço inválido por razão desconhecida." # Fallback
+                 final_business_rule = {"code": self.VAL_GENERIC_INVALID, "type": "Endereço - Validação Final", "name": final_message}
+        else:
+            final_message = "Endereço válido e consistente."
+            final_business_rule = {"code": AddressRuleCodes.RN_ADDR001, "type": "Endereço - Validação Final", "name": final_message}
+
 
         return self._format_result(
-            is_valid,
-            normalized_address,
-            message,
-            details,
-            {"code": validation_code, "type": "endereco"}
+            is_valid=final_is_valid,
+            dado_original=original_address_data,
+            dado_normalizado=normalized_address,
+            mensagem=final_message,
+            details=details,
+            business_rule_applied=final_business_rule
         )
-# Exemplo de uso:
-# cep_validator = CEPValidator()
-# address_validator = AddressValidator(cep_validator)
-# result = await address_validator.validate({
-#     "logradouro": "Praça da Sé",
-#     "numero": "1",
-#     "bairro": "Sé",
-#     "localidade": "São Paulo",
-#     "uf": "SP",
-#     "cep": "01001000"
-# })
-# print(result)

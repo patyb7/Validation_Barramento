@@ -1,50 +1,33 @@
 # app/models/validation_record.py
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union
-from pydantic import BaseModel, Field, UUID4 # Importe UUID4 para tipos UUID
+from pydantic import BaseModel, Field, UUID4 
 import uuid
+import hashlib # Importar hashlib para geração de hash
 
-# Define o modelo para os detalhes de validação (pode ser genérico para todos os tipos)
+# Estes modelos auxiliares são definidos, mas ValidationRecord usa Dict[str, Any] para flexibilidade
+# Se desejar usar tipagem mais forte, ValidationRecord precisaria ser ajustado para:
+# validation_details: ValidationDetails
+# e regra_negocio_parametros: BusinessRuleApplied (se fosse um objeto aninhado)
+
 class ValidationDetails(BaseModel):
-    """
-    Estrutura para armazenar detalhes específicos da validação.
-    Pode conter chaves variadas dependendo do tipo de validação (e-mail, telefone, etc.).
-    """
-    # Usamos Field(default_factory=dict) para garantir que seja sempre um dicionário
-    # se não for fornecido, evitando NoneType errors ao acessar subchaves.
-    additional_info: Dict[str, Any] = Field(default_factory=dict)
-
-    # Exemplo de campos que podem estar presentes para tipos específicos
-    # is_disposable: Optional[bool] = None # Para e-mail
-    # is_blacklisted: Optional[bool] = None # Para e-mail
-    # domain_resolves: Optional[bool] = None # Para e-mail
-    # phone_type: Optional[str] = None # Para telefone
-    # country_code: Optional[int] = None # Para telefone
-    # ddd_valid: Optional[bool] = None # Para telefone BR
-    # is_sequential_or_repeated: Optional[bool] = None # Para telefone/documentos
-
+    additional_info: Dict[str, Any] = Field(default_factory=dict, description="Informações adicionais de validação.")
     class Config:
-        extra = "allow" # Permite campos extras que não estão explicitamente definidos aqui
+        extra = "allow" # Permite campos extras para maior flexibilidade
 
-# Define o modelo para o sumário de ações pós-validação (regras de decisão)
 class PostValidationActionsSummary(BaseModel):
-    """Sumário das ações de regras de decisão aplicadas após a validação."""
-    soft_delete_action: Dict[str, Any] = Field(default_factory=dict)
-    duplicate_check_action: Dict[str, Any] = Field(default_factory=dict)
-    # Adicione outros conforme necessário
+    soft_delete_action: Dict[str, Any] = Field(default_factory=dict, description="Detalhes da ação de soft delete.")
+    duplicate_check_action: Dict[str, Any] = Field(default_factory=dict, description="Detalhes da verificação de duplicidade.")
     class Config:
-        extra = "allow" # Permite campos extras se as regras de negócio evoluírem
+        extra = "allow"
 
 class BusinessRuleApplied(BaseModel):
-    """Detalhes da regra de negócio específica aplicada."""
-    code: str
-    type: str
-    message: Optional[str] = None
-    # Parâmetros da regra de negócio podem ser um dicionário, mas podem ser nulos
-    parameters: Optional[Dict[str, Any]] = None 
-
+    code: str = Field(..., description="Código da regra de negócio.")
+    type: str = Field(..., description="Tipo da regra de negócio (ex: 'fraude', 'compliance').")
+    message: Optional[str] = Field(None, description="Mensagem associada à regra de negócio.")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="Parâmetros usados pela regra de negócio.") 
     class Config:
-        extra = "allow" # Permite campos extras que não estão explicitamente definidos aqui
+        extra = "allow"
 
 
 class ValidationRecord(BaseModel):
@@ -52,93 +35,60 @@ class ValidationRecord(BaseModel):
     Modelo para representar um registro de validação no banco de dados.
     Corresponde à estrutura da tabela 'validation_records'.
     """
-    # Usamos UUID4 para o tipo de ID. No Pydantic v2, UUID é o tipo nativo para UUIDs.
-    # O Pydantic irá converter automaticamente a string UUID do DB para o objeto UUID.
-    id: UUID4 = Field(default_factory=uuid.uuid4) # Gerado pelo DB, mas default para pydantic
-
-    dado_original: str
-    dado_normalizado: Optional[str] = None
-    is_valido: bool
-    mensagem: str
-    origem_validacao: str
-    tipo_validacao: str
-    app_name: str
-    client_identifier: Optional[str] = None
-
-    # validation_details é um JSONB no DB, mapeamos para Dict[str, Any] ou para ValidationDetails model
-    # Se for complexo, mantenha como Dict[str, Any] ou crie um modelo ValidationDetails mais específico.
-    # Por agora, mantenho Dict[str, Any] para flexibilidade, mas garanto o default.
-    validation_details: Dict[str, Any] = Field(default_factory=dict) 
-    
-    data_validacao: datetime = Field(default_factory=lambda: datetime.now(timezone.utc)) # Popula automaticamente
-    
-    regra_negocio_codigo: Optional[str] = None
-    regra_negocio_descricao: Optional[str] = None
-    regra_negocio_tipo: Optional[str] = None
-    # reg_neg_parametros é JSONB no DB, mapeamos para Dict[str, Any], pode ser None
-    regra_negocio_parametros: Optional[Dict[str, Any]] = None 
-
-    usuario_criacao: Optional[str] = None
-    usuario_atualizacao: Optional[str] = None
-
-    is_deleted: bool = False
-    deleted_at: Optional[datetime] = None
-
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-    is_golden_record: Optional[bool] = False # Indica se este registro é um Golden Record
-    golden_record_id: Optional[UUID4] = None # ID do Golden Record ao qual este registro pertence
-
-    status_qualificacao: Optional[str] = None # Ex: 'QUALIFICADO', 'NAO_QUALIFICADO', 'PENDENTE'
-    last_enrichment_attempt_at: Optional[datetime] = None # Última tentativa de enriquecimento
-
-    client_entity_id: Optional[str] = None # ID da entidade do cliente (por exemplo, ID do usuário no sistema do cliente)
-
+    id: UUID4 = Field(default_factory=uuid.uuid4, description="ID único do registro de validação (UUID).") 
+    dado_original: str = Field(..., description="O dado original que foi submetido para validação.")
+    # CORREÇÃO: Mudar para str com um valor padrão de string vazia para evitar NotNullViolationError
+    dado_normalizado: str = Field("", description="A versão normalizada ou limpa do dado validado.")
+    # CORREÇÃO: REMOVER alias="is_valid" daqui. is_valido é o nome da coluna no DB.
+    is_valido: bool = Field(..., description="Indica se o dado é considerado válido após a validação.")
+    mensagem: str = Field(..., description="Mensagem descritiva sobre o resultado da validação.")
+    origem_validacao: str = Field(..., description="A origem ou fonte da validação (ex: 'servico_externo', 'base_interna').")
+    tipo_validacao: str = Field(..., description="O tipo de validação realizada (ex: 'telefone', 'email', 'cpf_cnpj', 'endereco').")
+    app_name: str = Field(..., description="O nome da aplicação que iniciou a validação.")
+    client_identifier: Optional[str] = Field(None, description="Um identificador do cliente solicitante, se aplicável.")
+    # NOVO CAMPO: short_id_alias para visualização mais amigável
+    short_id_alias: Optional[str] = Field(None, description="Um alias curto e amigável para o ID do registro.")
+    validation_details: Dict[str, Any] = Field(default_factory=dict, description="Um dicionário flexível para detalhes adicionais específicos da validação.") 
+    data_validacao: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="O timestamp da validação.")
+    regra_negocio_codigo: Optional[str] = Field(None, description="Código da regra de negócio aplicada.")
+    regra_negocio_descricao: Optional[str] = Field(None, description="Descrição da regra de negócio aplicada.")
+    regra_negocio_tipo: Optional[str] = Field(None, description="Tipo da regra de negócio (ex: 'fraude', 'compliance', 'data_quality').")
+    regra_negocio_parametros: Optional[Dict[str, Any]] = Field(None, description="Parâmetros específicos usados pela regra de negócio, se houver.") 
+    usuario_criacao: Optional[str] = Field(None, description="Nome ou ID do usuário que criou o registro.")
+    usuario_atualizacao: Optional[str] = Field(None, description="Nome ou ID do usuário que atualizou o registro pela última vez.")
+    is_deleted: bool = Field(False, description="Flag que indica se o registro foi logicamente deletado (soft delete).")
+    deleted_at: Optional[datetime] = Field(None, description="Timestamp da exclusão lógica, se aplicável.")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timestamp de criação do registro no banco de dados.")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timestamp da última atualização do registro no banco de dados.")
+    is_golden_record: Optional[bool] = Field(False, description="Indica se este registro é o Golden Record para o seu dado normalizado.") 
+    golden_record_id: Optional[UUID4] = Field(None, description="O ID do Golden Record associado a este dado normalizado, se existir e não for este registro.") 
+    status_qualificacao: Optional[str] = Field(None, description="Status de qualificação do dado (ex: 'QUALIFIED', 'UNQUALIFIED', 'PENDING').") 
+    last_enrichment_attempt_at: Optional[datetime] = Field(None, description="Timestamp da última tentativa de enriquecimento para este dado.") 
+    client_entity_id: Optional[str] = Field(None, description="ID da entidade cliente (pessoa) à qual este dado pertence, para correlação.") 
     class Config:
-        from_attributes = True # Permite que o Pydantic crie instâncias a partir de atributos (ex: de um objeto de DB)
+        from_attributes = True # Permite criar o modelo a partir de atributos de objetos (ex: registros de DB)
         json_encoders = {
             datetime: lambda dt: dt.isoformat(),
-            uuid.UUID: lambda u: str(u) # Garante que UUIDs sejam serializados como strings
+            uuid.UUID: lambda u: str(u) # Garante que UUIDs sejam string na saída JSON
         }
-        populate_by_name = True # Para fields com alias
-
-# Este é o modelo de resposta da API que o seu endpoint retorna
-class ValidationResponse(BaseModel):
-    """
-    Modelo da resposta padronizada para as requisições de validação.
-    """
-    status: str # "success" ou "error"
-    message: str # Mensagem de status ou erro
-    is_valid: bool # Se o dado é válido
-    # Os detalhes de validação podem ser um dicionário flexível
-    validation_details: Dict[str, Any] 
-    app_name: Optional[str] = None
-    client_identifier: Optional[str] = None
-    # record_id deve ser UUID4
-    record_id: Optional[UUID4] = None 
-    input_data_original: Optional[Union[str, Dict[str, Any]]] = None # Pode ser string ou JSON para endereço
-    input_data_cleaned: Optional[Union[str, Dict[str, Any]]] = None # Pode ser string ou JSON para endereço
-    tipo_validacao: Optional[str] = None
-    origem_validacao: Optional[str] = None
-    regra_negocio_codigo: Optional[str] = None
-    regra_negocio_descricao: Optional[str] = None
-    regra_negocio_tipo: Optional[str] = None
-    regra_negocio_parametros: Optional[Dict[str, Any]] = None
-
-    # Novos campos relacionados ao Golden Record e enriquecimento para a resposta
-    is_golden_record_for_this_transaction: Optional[bool] = None
-    golden_record_id_for_normalized_data: Optional[UUID4] = None 
-    golden_record_data: Optional[Dict[str, Any]] = None # Dados do GR, se aplicável
-    client_entity_id: Optional[str] = None
-    status_qualificacao: Optional[str] = None
-    last_enrichment_attempt_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda dt: dt.isoformat(),
-            uuid.UUID: lambda u: str(u) # Garante que UUIDs sejam serializados como strings
-        }
-        populate_by_name = True
-        extra = "allow" # Permite campos extras para maior flexibilidade na resposta
+        populate_by_name = True # Permite que campos sejam preenchidos por alias ou nome de campo
+        # Adicione outros campos conforme necessário, alinhando com o SQL e os requisitos do seu sistema
+    def generate_short_id_alias(self, length: int = 8) -> str:
+        """Gera um alias curto a partir do UUID do registro usando SHA256."""
+        if not self.id:
+            return "" # Retorna string vazia se não houver ID para gerar hash
+        
+        # Converte o UUID para string e então para bytes para o hashing
+        hash_object = hashlib.sha256(str(self.id).encode('utf-8'))
+        # Retorna os primeiros 'length' caracteres do hash hexadecimal
+        return hash_object.hexdigest()[:length]
+    # Hook do Pydantic para preencher o alias automaticamente ao criar/validar
+    def model_post_init(self, __context: Any) -> None:
+        # Só gera se o ID já existe (ex: veio do DB ou foi gerado na criação) e o alias não foi definido
+        if self.id and self.short_id_alias is None:
+            self.short_id_alias = self.generate_short_id_alias()
+    def __str__(self):
+        """
+        Retorna uma representação em string do registro de validação.
+        """
+        return f"ValidationRecord(id={self.id}, dado_original={self.dado_original}, is_valido={self.is_valido}, app_name={self.app_name})"
