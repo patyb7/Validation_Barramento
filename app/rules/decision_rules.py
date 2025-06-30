@@ -1,11 +1,11 @@
 #app/rules/decision_rules.py
 import logging
 from typing import Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
-# Importações internas (ajuste conforme a sua estrutura de pastas se necessário)
-from ..database.repositories import ValidationRecordRepository
-from ..models.validation_record import ValidationRecord
+# Importações internas (ajustado para absolutas, assumindo 'app' como raiz do projeto)
+from app.database.repositories import ValidationRecordRepository
+from app.models.validation_record import ValidationRecord
 
 logger = logging.getLogger(__name__)
 
@@ -52,10 +52,10 @@ class DecisionRules:
         "RN_TEL_INVALID_APP": {
             "type": "Telefone - Inválido por App",
             "name": "Telefone Não Conforme para Apps Específicos",
-            "description": "Telefone não atende aos critérios da regra RN_TEL_BR_MOBILE_APP para aplicações específicas.",
-            "rule_definition": "Telefone inválido ou não segue o padrão celular BR (DDD 9 dígitos, não sequencial/repetido) para aplicações específicas.",
-            "result_status": "Não Aprovado pela Regra de Negócio",
-            "fail_status": "Não Aprovado pela Regra de Negócio",
+            "description": "Telefone não atende aos critérios da regra RN_TEL_BR_MOBILE_APP para aplicações específicas (inválido ou sequencial/repetido).",
+            "rule_definition": "Telefone inválido na validação primária OU sequencial/repetido E a aplicação é de um dos sistemas que exigem alta conformidade.",
+            "result_status": "Não Aprovado pela Regra de Negócio", # Resultado da regra de negócio é a não aprovação
+            "fail_status": "Não Aprovado pela Regra de Negócio", # Mesma mensagem para falha, pois é uma regra de reprovação
             "impact": "Bloqueio ou alerta em processos de sistemas de alta conformidade."
         },
 
@@ -72,7 +72,7 @@ class DecisionRules:
         "RN_CEP_INVALID_PJ": {
             "type": "CEP - Inválido para Cliente PJ",
             "name": "CEP Não Conforme para Clientes PJ",
-            "description": "CEP não atende aos critérios da regra RN_CEP_PJ_CLIENT para clientes PJ.",
+            "description": "CEP não atende aos critérios da regra RN_CEP_PJ_CLIENT para clientes PJ (inválido ou cliente não PJ).",
             "rule_definition": "CEP inválido ou cliente não é PJ (ou não começa com 'PJ').",
             "result_status": "Não Aprovado pela Regra de Negócio",
             "fail_status": "Não Aprovado pela Regra de Negócio",
@@ -104,7 +104,7 @@ class DecisionRules:
             "description": "Nenhum dos critérios para as regras de negócio específicas foram atendidos.",
             "rule_definition": "Verificar se as condições de outras regras de negócio se aplicam.",
             "result_status": "N/A",
-            "fail_status": "N/A",
+            "fail_status": "N/A", # "Não Aplicável" para uma regra padrão
             "impact": "Nenhum impacto direto pela regra de negócio."
         }
     }
@@ -116,7 +116,7 @@ class DecisionRules:
         self.repo: ValidationRecordRepository = repo
         logger.info("DecisionRules inicializado com o catálogo de regras de negócio generalizado.")
 
-    def apply_post_validation_actions(self, record: ValidationRecord, app_info: Dict[str, Any]) -> Dict[str, Any]:
+    async def apply_post_validation_actions(self, record: ValidationRecord, app_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Aplica um conjunto de regras de decisão de negócio a um registro de validação
         recém-criado, com base nas permissões e contexto da aplicação chamadora.
@@ -133,30 +133,31 @@ class DecisionRules:
         app_name = app_info.get("app_name", "Aplicação Desconhecida")
         actions_summary = {}
         
-        logger.info(f"Iniciando aplicação de regras de decisão para registro ID: {record.id}, App: '{app_name}'")
+        logger.info(f"Iniciando aplicação de regras de decisão para registro ID: {record.id if record.id else 'novo'}, App: '{app_name}'")
 
         # Priorize as regras de negócio específicas (que podem definir o 'regra_codigo' principal)
-        self._apply_specific_business_rules(record, app_name, actions_summary)
+        await self._apply_specific_business_rules(record, app_name, actions_summary)
 
         # Em seguida, aplique as regras de ação (que geralmente não alteram o 'regra_codigo' principal,
         # mas realizam ações no banco de dados ou adicionam informações aos detalhes).
-        self._rule_soft_delete_invalid_records(record, app_info, actions_summary)
-        self._rule_check_duplicates(record, app_info, actions_summary)
+        await self._rule_soft_delete_invalid_records(record, app_info, actions_summary)
+        await self._rule_check_duplicates(record, app_info, actions_summary)
 
-        logger.info(f"Regras de decisão aplicadas para registro ID: {record.id}. Sumário: {actions_summary}")
+        logger.info(f"Regras de decisão aplicadas para registro ID: {record.id if record.id else 'novo'}. Sumário: {actions_summary}")
         return actions_summary
 
-    def _apply_specific_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
+    async def _apply_specific_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
         """
-        Aplica regras de negócio que podem definir o 'regra_codigo' principal
+        Aplica regras de negócio específicas que podem definir o 'regra_codigo' principal
         e adicionar detalhes relevantes ao 'validation_details' do registro.
         """
+        # Garante que o dicionário business_rule_applied exista
         record.validation_details.setdefault("business_rule_applied", {})
         
         if record.tipo_validacao == "telefone":
-            self._apply_phone_business_rules(record, app_name, actions_summary)
+            await self._apply_phone_business_rules(record, app_name, actions_summary)
         elif record.tipo_validacao == "cep":
-            self._apply_cep_business_rules(record, app_name, actions_summary)
+            await self._apply_cep_business_rules(record, app_name, actions_summary)
         # Adicione mais 'elif' para outros tipos de validação aqui
 
         # Se nenhuma regra de negócio específica foi aplicada pelo tipo de validação
@@ -169,11 +170,10 @@ class DecisionRules:
         rule_code = "RN_NEGOCIO_PADRAO"
         rule_metadata = self.BUSINESS_RULES.get(rule_code)
         if rule_metadata:
-            record.regra_negocio_codigo = rule_code # Adicionado para consistência com o modelo
-            record.regra_negocio_descricao = rule_metadata["description"] # <--- Adicionado
-            # Adiciona os metadados da regra de negócio ao registro
-            record.regra_negocio_tipo = rule_metadata["type"] # <--- Adicionado
-            record.regra_negocio_parametros = {} # <--- Adicionado (se não houver parâmetros específicos)
+            record.regra_negocio_codigo = rule_code
+            record.regra_negocio_descricao = rule_metadata["description"]
+            record.regra_negocio_tipo = rule_metadata["type"]
+            record.regra_negocio_parametros = {} # Regra padrão não tem parâmetros específicos
 
             record.validation_details["business_rule_applied"] = {
                 "code": rule_code,
@@ -187,29 +187,37 @@ class DecisionRules:
             actions_summary["specific_business_rule_status"] = "NONE_APPLIED"
             logger.debug(f"[Regra Negócio] Regra padrão '{rule_code}' aplicada para registro ID {record.id}.")
 
-    def _apply_phone_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
+    async def _apply_phone_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
         """
-        Aplica regras de negócio específicas para o tipo 'phone', considerando diferentes apps.
+        Aplica regras de negócio específicas para o tipo 'telefone', considerando diferentes apps.
         """
         # Condições comuns para muitas regras de telefone
         is_valid_by_validator = record.is_valido
         is_brazilian_mobile = False
+        
         # VAL_PHN013 no validador indica que é sequencial/repetido
-        is_not_sequential_or_repeated = (record.validation_details.get("validation_code") != "VAL_PHN013")
+        is_sequential_or_repeated = (record.validation_details.get("validation_code") == "VAL_PHN013")
+        is_not_sequential_or_repeated = not is_sequential_or_repeated
 
         # Verifica se é um celular brasileiro (se phonenumbers o identificou ou via fallback)
         if record.validation_details.get("type_detected") in ["Celular", "Celular BR"]:
             is_brazilian_mobile = True
 
         # RN_TEL_BR_MOBILE_APP: Telefone Celular BR para Apps Específicos (Seguros, Consórcio, Crédito)
+        # Aplica se for válido, celular BR E não sequencial/repetido E a aplicação é uma das que exige conformidade
         if is_valid_by_validator and is_brazilian_mobile and is_not_sequential_or_repeated and app_name in self.APPS_REQUIRING_STRICT_PHONE:
             rule_code = "RN_TEL_BR_MOBILE_APP"
             rule_metadata = self.BUSINESS_RULES.get(rule_code)
             if rule_metadata:
-                record.regra_negocio_codigo = rule_code # <--- Adicionado
-                record.regra_negocio_descricao = rule_metadata["description"] # <--- Adicionado
-                record.regra_negocio_tipo = rule_metadata["type"] # <--- Adicionado
-                record.regra_negocio_parametros = {} # <--- Adicionado
+                record.regra_negocio_codigo = rule_code
+                record.regra_negocio_descricao = rule_metadata["description"]
+                record.regra_negocio_tipo = rule_metadata["type"]
+                # Exemplo de parâmetros para a regra
+                record.regra_negocio_parametros = {
+                    "app_context": app_name,
+                    "required_phone_type": "mobile_br",
+                    "excluded_validation_codes": ["VAL_PHN013"]
+                }
 
                 record.validation_details["business_rule_applied"] = {
                     "code": rule_code,
@@ -225,16 +233,19 @@ class DecisionRules:
                 logger.info(f"[Regra Negócio] {rule_code} aplicada para telefone {record.dado_original} do app {app_name}.")
             
         # RN_TEL_INVALID_APP: Telefone Não Conforme para Apps Específicos
-        # Aplica se a validação primária falhou E a aplicação é uma das que exige conformidade
-        elif not is_valid_by_validator and app_name in self.APPS_REQUIRING_STRICT_PHONE: 
+        # Aplica se (a validação primária falhou OU é sequencial/repetido) E a aplicação é uma das que exige conformidade
+        elif (not is_valid_by_validator or is_sequential_or_repeated) and app_name in self.APPS_REQUIRING_STRICT_PHONE: 
             rule_code = "RN_TEL_INVALID_APP"
             rule_metadata = self.BUSINESS_RULES.get(rule_code)
             if rule_metadata:
-                
-                record.regra_negocio_codigo = rule_code # <--- Adicionado
-                record.regra_negocio_descricao = rule_metadata["description"] # <--- Adicionado
-                record.regra_negocio_tipo = rule_metadata["type"] # <--- Adicionado
-                record.regra_negocio_parametros = {} # <--- Adicionado
+                record.regra_negocio_codigo = rule_code
+                record.regra_negocio_descricao = rule_metadata["description"]
+                record.regra_negocio_tipo = rule_metadata["type"]
+                # Parâmetros para a regra de telefone inválido
+                record.regra_negocio_parametros = {
+                    "app_context": app_name,
+                    "reason": "validation_failed" if not is_valid_by_validator else "sequential_or_repeated"
+                }
 
                 record.validation_details["business_rule_applied"] = {
                     "code": rule_code,
@@ -242,7 +253,7 @@ class DecisionRules:
                     "name": rule_metadata["name"],
                     "description": rule_metadata["description"],
                     "rule_definition": rule_metadata["rule_definition"],
-                    "result": rule_metadata["fail_status"],
+                    "result": rule_metadata["fail_status"], # Status de falha porque a regra indica não conformidade
                     "impact": rule_metadata["impact"]
                 }
                 actions_summary[f"{rule_code}_status"] = "APPLIED_FAILURE"
@@ -251,7 +262,7 @@ class DecisionRules:
             
         # Se nenhuma das regras específicas acima foi aplicada, a regra padrão será definida no método chamador.
 
-    def _apply_cep_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
+    async def _apply_cep_business_rules(self, record: ValidationRecord, app_name: str, actions_summary: Dict[str, Any]):
         """
         Aplica regras de negócio específicas para o tipo 'cep', considerando diferentes apps/clientes.
         """
@@ -268,11 +279,10 @@ class DecisionRules:
             rule_code = "RN_CEP_PJ_CLIENT"
             rule_metadata = self.BUSINESS_RULES.get(rule_code)
             if rule_metadata:
-                
-                record.regra_negocio_codigo = rule_code # <--- Adicionado
-                record.regra_negocio_descricao = rule_metadata["description"] # <--- Adicionado
-                record.regra_negocio_tipo = rule_metadata["type"] # <--- Adicionado
-                record.regra_negocio_parametros = {} # <--- Adicionado
+                record.regra_negocio_codigo = rule_code
+                record.regra_negocio_descricao = rule_metadata["description"]
+                record.regra_negocio_tipo = rule_metadata["type"]
+                record.regra_negocio_parametros = {"client_type": "PJ", "app_context": app_name}
 
                 record.validation_details["business_rule_applied"] = {
                     "code": rule_code,
@@ -288,15 +298,14 @@ class DecisionRules:
                 logger.info(f"[Regra Negócio] {rule_code} aplicada para CEP {record.dado_original} do cliente PJ.")
             
         # RN_CEP_INVALID_PJ: CEP Não Conforme para Clientes PJ
-        elif not is_valid_by_validator and is_client_pj: 
+        elif not is_valid_by_validator and is_client_pj: # Aplica se for inválido E cliente PJ
             rule_code = "RN_CEP_INVALID_PJ"
             rule_metadata = self.BUSINESS_RULES.get(rule_code)
             if rule_metadata:
-                
-                record.regra_negocio_codigo = rule_code # <--- Adicionado
-                record.regra_negocio_descricao = rule_metadata["description"] # <--- Adicionado
-                record.regra_negocio_tipo = rule_metadata["type"] # <--- Adicionado
-                record.regra_negocio_parametros = {} # <--- Adicionado
+                record.regra_negocio_codigo = rule_code
+                record.regra_negocio_descricao = rule_metadata["description"]
+                record.regra_negocio_tipo = rule_metadata["type"]
+                record.regra_negocio_parametros = {"client_type": "PJ", "reason": "validation_failed"}
 
                 record.validation_details["business_rule_applied"] = {
                     "code": rule_code,
@@ -313,7 +322,7 @@ class DecisionRules:
             
         # Se nenhuma das regras específicas acima foi aplicada, a regra padrão será definida no método chamador.
 
-    def _rule_soft_delete_invalid_records(self, record: ValidationRecord, app_info: Dict[str, Any], actions_summary: Dict[str, Any]):
+    async def _rule_soft_delete_invalid_records(self, record: ValidationRecord, app_info: Dict[str, Any], actions_summary: Dict[str, Any]):
         """
         Regra de Ação: Se o registro é inválido e a aplicação tem a permissão 'can_delete_invalid',
         marca o registro para soft delete no banco de dados.
@@ -323,56 +332,55 @@ class DecisionRules:
         rule_metadata = self.BUSINESS_RULES.get(rule_code)
 
         if not record.is_valido and app_info.get("can_delete_invalid", False):
-            logger.info(f"Tentando soft delete para registro ID {record.id} (inválido). App '{app_info.get('app_name')}' tem permissão.")
+            logger.info(f"[{rule_code}] Tentando soft delete para registro ID {record.id} (inválido). App '{app_info.get('app_name')}' tem permissão.")
             try:
                 # Importante: record.id já deve estar definido aqui, pois a persistência inicial ocorre antes.
-                success = self.repo.soft_delete_record(record.id) # Alterado de soft_delete_record_by_id para soft_delete_record
+                success = await self.repo.soft_delete_record(record.id)
                 if success:
                     record.is_deleted = True
-                    record.deleted_at = datetime.now() 
+                    record.deleted_at = datetime.now(timezone.utc) # Usar timezone.utc
                     actions_summary["soft_delete_action"] = {
                         "code": rule_code,
                         "status": rule_metadata["result_status"] if rule_metadata else "Executed",
                         "message": "Registro inválido foi marcado para soft delete com sucesso."
                     }
-                    logger.info(f"[Ação] Registro ID {record.id} (Inválido) marcado para soft delete pela aplicação '{app_info.get('app_name')}'.")
+                    logger.info(f"[{rule_code}] Registro ID {record.id} (Inválido) marcado para soft delete pela aplicação '{app_info.get('app_name')}'.")
                 else:
                     actions_summary["soft_delete_action"] = {
                         "code": rule_code,
                         "status": rule_metadata["fail_status"] if rule_metadata else "Failed",
                         "message": "Falha ao marcar registro inválido para soft delete (repositório retornou falha, ou já estava deletado/não encontrado)."
                     }
-                    logger.warning(f"[Ação] Falha ao marcar registro ID {record.id} para soft delete. App: '{app_info.get('app_name')}'.")
+                    logger.warning(f"[{rule_code}] Falha ao marcar registro ID {record.id} para soft delete. App: '{app_info.get('app_name')}'.")
             except Exception as e:
                 actions_summary["soft_delete_action"] = {
                     "code": rule_code,
                     "status": rule_metadata["fail_status"] if rule_metadata else "Error",
                     "message": f"Erro inesperado ao tentar soft delete de registro inválido: {e}"
                 }
-                logger.error(f"[Ação] Erro ao tentar soft delete para registro ID {record.id}: {e}", exc_info=True)
+                logger.error(f"[{rule_code}] Erro ao tentar soft delete para registro ID {record.id}: {e}", exc_info=True)
         else:
             actions_summary["soft_delete_action"] = {
                 "code": rule_code,
                 "status": "Not Applicable",
                 "message": "Regra de soft delete de inválidos não aplicada (registro válido ou sem permissão)."
             }
-            logger.debug(f"Soft delete de inválidos não aplicado para registro ID {record.id}. Válido: {record.is_valido}, Permissão: {app_info.get('can_delete_invalid', False)}.")
+            logger.debug(f"[{rule_code}] Soft delete de inválidos não aplicado para registro ID {record.id}. Válido: {record.is_valido}, Permissão: {app_info.get('can_delete_invalid', False)}.")
 
-
-    def _rule_check_duplicates(self, record: ValidationRecord, app_info: Dict[str, Any], actions_summary: Dict[str, Any]):
+    async def _rule_check_duplicates(self, record: ValidationRecord, app_info: Dict[str, Any], actions_summary: Dict[str, Any]):
         """
         Regra de Ação: Se o registro é válido e a aplicação tem a permissão 'can_check_duplicates',
         verifica se já existe um registro similar no banco de dados.
-        Código da Regra de A002.
+        Código da Regra de Ação: RN_A_002.
         """
         rule_code = "RN_A_002"
         rule_metadata = self.BUSINESS_RULES.get(rule_code)
 
         if record.is_valido and app_info.get("can_check_duplicates", False) and record.dado_normalizado:
-            logger.info(f"Tentando verificar duplicidade para registro ID {record.id}. App '{app_info.get('app_name')}' tem permissão.")
+            logger.info(f"[{rule_code}] Tentando verificar duplicidade para registro ID {record.id}. App '{app_info.get('app_name')}' tem permissão.")
             try:
                 # Exclui o próprio record.id da busca para não se considerar um duplicado
-                duplicate_record_found: Optional[ValidationRecord] = self.repo.find_duplicate_record(
+                duplicate_record_found: Optional[ValidationRecord] = await self.repo.find_duplicate_record(
                     dado_normalizado=record.dado_normalizado,
                     tipo_validacao=record.tipo_validacao,
                     exclude_record_id=record.id # Garante que não encontra a si mesmo
@@ -390,7 +398,7 @@ class DecisionRules:
                         "duplicate_id": duplicate_record_found.id
                     }
                     logger.warning(
-                        f"[Ação] Aplicação '{app_info.get('app_name')}': "
+                        f"[{rule_code}] Aplicação '{app_info.get('app_name')}': "
                         f"Duplicidade encontrada para '{record.dado_normalizado}' (Tipo: {record.tipo_validacao}). "
                         f"Registro existente ID: {duplicate_record_found.id}."
                     )
@@ -401,7 +409,7 @@ class DecisionRules:
                         "message": f"Dado '{record.dado_normalizado}' não é duplicado no histórico.",
                         "is_duplicate": False
                     }
-                    logger.info(f"[Ação] Aplicação '{app_info.get('app_name')}': Nenhum duplicado encontrado para '{record.dado_normalizado}'.")
+                    logger.info(f"[{rule_code}] Aplicação '{app_info.get('app_name')}': Nenhum duplicado encontrado para '{record.dado_normalizado}'.")
 
             except Exception as e:
                 actions_summary["duplicate_check_action"] = {
@@ -409,11 +417,11 @@ class DecisionRules:
                     "status": rule_metadata["fail_status"] if rule_metadata else "Error",
                     "message": f"Erro inesperado ao verificar duplicidade: {e}"
                 }
-                logger.error(f"[Ação] Erro ao verificar duplicidade para registro ID {record.id}: {e}", exc_info=True)
+                logger.error(f"[{rule_code}] Erro ao verificar duplicidade para registro ID {record.id}: {e}", exc_info=True)
         else:
             actions_summary["duplicate_check_action"] = {
                 "code": rule_code,
                 "status": "Not Applicable",
                 "message": "Regra de verificação de duplicidade não aplicada (registro inválido, sem permissão ou dados normalizados para comparação)."
             }
-            logger.debug(f"Verificação de duplicidade não aplicada para registro ID {record.id}. Válido: {record.is_valido}, Permissão: {app_info.get('can_check_duplicates', False)}, Dado Normalizado: {bool(record.dado_normalizado)}.")
+            logger.debug(f"[{rule_code}] Verificação de duplicidade não aplicada para registro ID {record.id}. Válido: {record.is_valido}, Permissão: {app_info.get('can_check_duplicates', False)}, Dado Normalizado: {bool(record.dado_normalizado)}.")

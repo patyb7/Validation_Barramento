@@ -1,18 +1,15 @@
-# G:\Projeto_Validador_Barramento\Validation_Barramento\main.py
-
+# G:/Projeto_Validador_Barramento/Validation_Barramento/main.py
 import uvicorn
 import logging
+from app.api.api_main import app
 import sys
 import os
+import fastapi
 
-# Configuração básica de logging para este script
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# O diretório atual (onde este main.py reside) é a raiz do seu projeto.
-# Garante que a pasta 'app' (que é um subdiretório do diretório atual)
-# seja reconhecida como um pacote de nível superior pelo Python.
-project_root = os.path.dirname(os.path.abspath(__file__)) # Agora project_root será G:\...\Validation_Barramento
+project_root = os.path.dirname(os.path.abspath(__file__))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
     logger.info(f"Adicionado '{project_root}' ao sys.path para imports.")

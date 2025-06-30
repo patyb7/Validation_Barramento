@@ -1,5 +1,3 @@
-# app/database/manager.py
-
 import asyncpg
 import logging
 from typing import Optional
@@ -8,90 +6,67 @@ logger = logging.getLogger(__name__)
 
 class DatabaseManager:
     _instance: Optional['DatabaseManager'] = None
-    _connection_pool: Optional[asyncpg.pool.Pool] = None
-    _db_url: Optional[str] = None
+    _pool: Optional[asyncpg.Pool] = None
+    _database_url: Optional[str] = None
+    _is_connected: bool = False
 
-    def __new__(cls): # <--- Remova o db_url do __new__
-        """
-        Garanto que apenas uma instância de DatabaseManager seja criada (Singleton).
-        O db_url será setado via o método connect ou get_instance.
-        """
+    # Remova o 'database_url' do __new__ para evitar que a primeira chamada "sem argumento" do singleton defina a URL.
+    # Agora o __new__ apenas garante que uma instância exista.
+    def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
-            # Não inicialize _db_url nem _connection_pool aqui
-            cls._instance._db_url = None 
-            cls._instance._connection_pool = None
             logger.info("DatabaseManager: Primeira instância singleton criada.")
         return cls._instance
 
-    def __init__(self, db_url: Optional[str] = None):
-        # Este __init__ só é chamado na primeira vez.
-        # Se db_url for passado, use-o para setar o _db_url da instância.
-        if self._db_url is None and db_url is not None:
-             self._db_url = db_url
+    # O método 'initialize' é chamado APENAS UMA VEZ para configurar o pool.
+    # Ele verifica se já está conectado para evitar reconexões desnecessárias.
+    async def initialize(self, database_url: str):
+        if self._is_connected and self._pool is not None and self._database_url == database_url:
+            logger.info("DatabaseManager: Pool de conexões já está conectado com a mesma URL.")
+            return
 
-    @classmethod
-    def get_instance(cls, db_url: Optional[str] = None) -> 'DatabaseManager':
-        """
-        Retorna a instância única do DatabaseManager.
-        Se for a primeira vez e db_url for fornecido, inicializa-o.
-        """
-        if cls._instance is None:
-            if db_url is None:
-                raise ValueError("db_url deve ser fornecido na primeira chamada de get_instance.")
-            # Chama __new__ e __init__ para a primeira instância
-            instance = cls() 
-            instance._db_url = db_url # Define o db_url da instância
-            logger.info(f"DatabaseManager: Primeira instância configurada com URL.")
-            return instance
-        else:
-            # Se a instância já existe e uma nova URL foi passada (e é diferente), avise.
-            if db_url is not None and cls._instance._db_url != db_url:
-                logger.warning(f"DatabaseManager: Tentativa de reconfigurar URL para singleton existente. Usando a URL original.")
-            return cls._instance
+        if self._pool is not None:
+            logger.warning("DatabaseManager: Fechando pool de conexões existente antes de re-inicializar.")
+            await self.close_pool()
 
-    # Adicione esta propriedade para acessar o pool
-    @property
-    def pool(self) -> asyncpg.pool.Pool:
-        """Propriedade para acessar o pool de conexões. Garante que o pool foi inicializado."""
-        if self._connection_pool is None: # Use _connection_pool aqui
-            raise RuntimeError("Pool de conexões não inicializado. Chame 'connect()' primeiro.")
-        return self._connection_pool
+        self._database_url = database_url
+        try:
+            self._pool = await asyncpg.create_pool(
+                self._database_url,
+                min_size=1,  # Defina estes valores com base nas suas settings, se desejar
+                max_size=10,
+                timeout=60
+            )
+            self._is_connected = True
+            logger.info(f"DatabaseManager: Pool de conexões asyncpg criado com sucesso para {self._database_url}.")
+        except Exception as e:
+            self._is_connected = False
+            logger.critical(f"DatabaseManager: Falha ao criar pool de conexões para {self._database_url}: {e}", exc_info=True)
+            raise
 
-    async def connect(self):
-        """
-        Cria o pool de conexões assíncrono. Deve ser chamado no startup da aplicação.
-        """
-        if self._connection_pool is None: # Use _connection_pool aqui
-            if not self._db_url: # Use _db_url da instância
-                raise RuntimeError("DATABASE_URL não configurada no DatabaseManager antes de tentar conectar. Chame DatabaseManager(db_url) ou get_instance(db_url) primeiro.")
-            try:
-                logger.info("DatabaseManager: Criando pool de conexões asyncpg...")
-                self._connection_pool = await asyncpg.create_pool( # Use _connection_pool aqui
-                    dsn=self._db_url, # Use _db_url da instância
-                    min_size=1, 
-                    max_size=10,
-                    timeout=60,
-                )
-                logger.info("DatabaseManager: Pool de conexões asyncpg criado com sucesso.")
-            except Exception as e:
-                logger.critical(f"DatabaseManager: Falha CRÍTICA ao criar pool de conexões: {e}", exc_info=True)
-                raise # Re-lança a exceção para que a aplicação não inicie
+    # Remova o método connect() antigo ou adapte-o para chamar initialize()
+    # Aqui, vamos substituir o connect() por initialize no startup event.
 
-    async def get_connection(self):
-        """Obtém uma conexão do pool."""
-        return await self.pool.acquire() # Usa a propriedade pool
+    async def get_connection(self) -> asyncpg.Connection:
+        if not self._is_connected or self._pool is None:
+            logger.error("DatabaseManager: Tentativa de obter conexão de um pool não inicializado ou desconectado.")
+            raise Exception("Pool de conexões do banco de dados não está inicializado.")
+        return await self._pool.acquire()
 
-    async def put_connection(self, conn):
-        """Libera uma conexão de volta para o pool."""
-        if self._connection_pool is not None and conn is not None: # Use _connection_pool aqui
-            await self._connection_pool.release(conn)
+    async def put_connection(self, conn: asyncpg.Connection):
+        if self._pool is not None:
+            await self._pool.release(conn)
 
     async def close_pool(self):
-        """Fecha o pool de conexões."""
-        if self._connection_pool: # Use _connection_pool aqui
+        if self._pool:
             logger.info("DatabaseManager: Fechando pool de conexões...")
-            await self._connection_pool.close()
-            self._connection_pool = None # Use _connection_pool aqui
-            self._instance = None # Resetar a instância
+            await self._pool.close()
+            self._pool = None
+            self._is_connected = False
             logger.info("DatabaseManager: Pool de conexões fechado.")
+
+    # Novo método estático para obter a instância, sem forçar a inicialização aqui.
+    @classmethod
+    def get_instance(cls) -> 'DatabaseManager':
+        return cls.__new__(cls)
+    

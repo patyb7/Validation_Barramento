@@ -1,0 +1,24 @@
+fastapi
+uvicorn[standard]
+email_validator # Se você usa o email_validator diretamente ou como dependência transitiva
+dnspython # Necessário para o email_validator
+httpx # Se você usa httpx diretamente ou como dependência transitiva
+# Dependências adicionais podem ser adicionadas aqui conforme necessário
+# Exemplo de dependências adicionais
+# sqlalchemy
+requests
+psycopg2-binary
+sqlalchemy[asyncio]
+asyncpg
+alembic
+# Dependências de desenvolvimento
+pytest
+pydantic
+# black
+# isort
+# Dependências de produção
+# Dependências de produção podem ser adicionadas aqui conforme necessário
+# Exemplo de dependências de produção
+gunicorn
+# Dependências de produção podem ser adicionadas aqui conforme necessário
+# Exemplo de dependências adicionais

@@ -3,176 +3,119 @@ import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 import asyncpg
-import json # Importação necessária para desserialização
-
+import json
 from app.database.manager import DatabaseManager
-from app.models.validation_record import ValidationRecord # Importa o modelo Pydantic
-from pydantic import ValidationError # Importa ValidationError para capturar erros específicos do Pydantic
+from app.models import ValidationRecord 
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
 class ValidationRecordRepository:
     """
     Repositório para interagir com a tabela 'validacoes_gerais' no banco de dados.
-    Gerencia operações CRUD para registros de validação.
+    Gerencia operações CRUD para registros de validação, incluindo lógica de Golden Record.
     """
     def __init__(self, db_manager: DatabaseManager):
-        self.db_pool = db_manager.pool
-        if self.db_pool is None:
-            raise ValueError("O pool de conexões do DatabaseManager não foi inicializado.")
+        self.db_manager = db_manager
         logger.info("ValidationRecordRepository inicializado.")
 
     def _row_to_validation_record(self, row: asyncpg.Record) -> ValidationRecord:
         """
         Converte uma linha (asyncpg.Record) do banco de dados para um modelo ValidationRecord.
-        Realiza a desserialização de campos JSONB.
         """
-        record_dict = dict(row) # Converte a linha do asyncpg para um dicionário Python
-
-        # Deserializar campos JSONB que Pydantic espera como dicionários
-        # asyncpg já pode retornar JSONB como dict, mas é uma boa prática
-        # garantir, especialmente se houver inconsistências ou para segurança.
-        # No caso de `asyncpg.exceptions.PostgresSyntaxError: INSERT tem mais colunas alvo do que expressões`
-        # e o subsequente erro de validação do Pydantic, o asyncpg ESTAVA retornando como string.
-        if 'regra_negocio_parametros' in record_dict and isinstance(record_dict['regra_negocio_parametros'], str):
-            try:
-                record_dict['regra_negocio_parametros'] = json.loads(record_dict['regra_negocio_parametros'])
-            except json.JSONDecodeError:
-                logger.error(f"Erro ao decodificar JSON para 'regra_negocio_parametros' no record {record_dict.get('id')}: {record_dict['regra_negocio_parametros']}")
-                record_dict['regra_negocio_parametros'] = {} # Fallback para dicionário vazio em caso de erro
-
-        if 'validation_details' in record_dict and isinstance(record_dict['validation_details'], str):
-            try:
-                record_dict['validation_details'] = json.loads(record_dict['validation_details'])
-            except json.JSONDecodeError:
-                logger.error(f"Erro ao decodificar JSON para 'validation_details' no record {record_dict.get('id')}: {record_dict['validation_details']}")
-                record_dict['validation_details'] = {} # Fallback para dicionário vazio em caso de erro
-        
-        # asyncpg geralmente já retorna datetimes com timezone, mas se necessário,
-        # você pode garantir que estejam em UTC, embora não pareça ser a causa do seu problema atual.
-        # Exemplo:
-        # for key in ['data_validacao', 'created_at', 'updated_at', 'deleted_at']:
-        #     if key in record_dict and isinstance(record_dict[key], datetime) and record_dict[key].tzinfo is None:
-        #         record_dict[key] = record_dict[key].replace(tzinfo=timezone.utc)
+        record_dict = dict(row)
 
         try:
-            # Pydantic 2.x usa model_validate ou model_construct
-            # model_validate faz a validação completa, model_construct cria sem validação (mais rápido, mas menos seguro)
-            # Para conversão de DB, model_validate é geralmente mais seguro.
             record = ValidationRecord.model_validate(record_dict)
             return record
         except ValidationError as e:
-            logger.error(f"Erro ao converter linha do DB para ValidationRecord (erro Pydantic): {e}. Linha: {row}")
-            raise # Re-lançar o erro para que a camada superior possa lidar
+            logger.error(f"Erro ao converter linha do DB para ValidationRecord (erro Pydantic): {e}. Linha: {record_dict}", exc_info=True)
+            raise
 
-    async def insert_record(self, data: Dict[str, Any]) -> Optional[ValidationRecord]:
+    async def create_record(self, record: ValidationRecord) -> Optional[ValidationRecord]:
         """
         Insere um novo registro de validação no banco de dados.
-        Recebe um dicionário de dados, que deve ter seus campos JSONB já serializados (json.dumps)
-        antes de serem passados para este método.
-        As colunas com DEFAULT CURRENT_TIMESTAMP (data_validacao, created_at, updated_at)
-        e a coluna SERIAL PRIMARY KEY (id) são gerenciadas automaticamente pelo banco e
-        NÃO devem ser incluídas no INSERT.
+        Recebe um objeto ValidationRecord.
         """
         query = """
             INSERT INTO validacoes_gerais (
-                regra_negocio_tipo,      -- $1
-                regra_negocio_descricao, -- $2
-                regra_negocio_parametros,-- $3 (JSONB como texto)
-                usuario_criacao,         -- $4
-                usuario_atualizacao,     -- $5
-                dado_original,           -- $6
-                dado_normalizado,        -- $7
-                mensagem,                -- $8
-                origem_validacao,        -- $9
-                tipo_validacao,          -- $10
-                is_valido,               -- $11
-                app_name,                -- $12
-                client_identifier,       -- $13
-                regra_negocio_codigo,    -- $14
-                validation_details,      -- $15 (JSONB como texto)
-                is_deleted,              -- $16
-                deleted_at               -- $17
+                regra_negocio_tipo, regra_negocio_descricao, regra_negocio_parametros,
+                usuario_criacao, usuario_atualizacao, dado_original, dado_normalizado,
+                mensagem, origem_validacao, tipo_validacao, is_valido, data_validacao,
+                app_name, client_identifier, regra_negocio_codigo, validation_details,
+                is_deleted, deleted_at, is_golden_record, golden_record_id, client_entity_id,
+                status_qualificacao, last_enrichment_attempt_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+                $1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb,
+                $16, $17, $18, $19, $20, $21, $22, $23
             ) RETURNING *;
         """
         try:
-            async with self.db_pool.acquire() as conn:
+            async with self.db_manager.get_connection() as conn:
                 inserted_row = await conn.fetchrow(
                     query,
-                    data.get('regra_negocio_tipo'),
-                    data.get('regra_negocio_descricao'),
-                    data.get('regra_negocio_parametros'), # Já deve ser uma string JSON ou None
-                    data.get('usuario_criacao'),
-                    data.get('usuario_atualizacao'),
-                    data.get('dado_original'),
-                    data.get('dado_normalizado'),
-                    data.get('mensagem'),
-                    data.get('origem_validacao'),
-                    data.get('tipo_validacao'),
-                    data.get('is_valido'),
-                    data.get('app_name'),
-                    data.get('client_identifier'),
-                    data.get('regra_negocio_codigo'),
-                    data.get('validation_details'), # Já deve ser uma string JSON ou '{}'
-                    data.get('is_deleted'),
-                    data.get('deleted_at')
+                    record.regra_negocio_tipo, record.regra_negocio_descricao, json.dumps(record.regra_negocio_parametros),
+                    record.usuario_criacao, record.usuario_atualizacao, record.dado_original, record.dado_normalizado,
+                    record.mensagem, record.origem_validacao, record.tipo_validacao, record.is_valido, record.data_validacao,
+                    record.app_name, record.client_identifier, record.regra_negocio_codigo, json.dumps(record.validation_details),
+                    record.is_deleted, record.deleted_at,
+                    record.is_golden_record, record.golden_record_id, record.client_entity_id,
+                    record.status_qualificacao, record.last_enrichment_attempt_at
                 )
                 if inserted_row:
-                    logger.info(f"Registro de validação inserido para {data.get('dado_original')}.")
+                    logger.info(f"Registro de validação inserido para {record.dado_original} (ID: {inserted_row['id']}).")
                     return self._row_to_validation_record(inserted_row)
                 return None
         except Exception as e:
             logger.error(f"Erro ao inserir registro de validação: {e}", exc_info=True)
-            # É importante relançar a exceção para que o serviço que chamou possa tratá-la
             raise
 
-    async def update_record(self, record_id: int, data: Dict[str, Any]) -> Optional[ValidationRecord]:
+    async def update_record(self, record_id: int, record: ValidationRecord) -> Optional[ValidationRecord]:
         """
         Atualiza um registro de validação existente no banco de dados.
-        Os campos 'created_at', 'usuario_criacao' e 'id' são excluídos da atualização.
-        Recebe um dicionário de dados, que deve ter seus campos JSONB já serializados (json.dumps).
+        Recebe um objeto ValidationRecord.
         """
-        # Filtra campos que não devem ser atualizados e cria a string SET dinamicamente
-        set_parts = []
-        values = []
-        param_counter = 1
-        
-        # Campos que podem ser atualizados
-        updatable_fields = [
-            'regra_negocio_tipo', 'regra_negocio_descricao', 'regra_negocio_parametros',
-            'usuario_atualizacao', 'dado_original', 'dado_normalizado', 'mensagem',
-            'origem_validacao', 'tipo_validacao', 'is_valido', 'app_name',
-            'client_identifier', 'regra_negocio_codigo', 'validation_details',
-            'is_deleted', 'deleted_at', 'data_validacao', 'updated_at' # updated_at será sobrescrito pelo trigger
-        ]
-
-        # Garantir que updated_at seja sempre atualizado ao chamar este método
-        data['updated_at'] = datetime.now(timezone.utc)
-
-        for field in updatable_fields:
-            if field in data:
-                set_parts.append(f"{field} = ${param_counter}")
-                values.append(data[field])
-                param_counter += 1
-
-        if not set_parts:
-            logger.warning(f"Tentativa de atualizar record {record_id} sem dados válidos para atualização.")
-            return None
-
-        # Adiciona o ID ao final dos valores
-        values.append(record_id)
-        
-        query = f"""
-            UPDATE validacoes_gerais
-            SET {', '.join(set_parts)}
-            WHERE id = ${param_counter}
+        query = """
+            UPDATE validacoes_gerais SET
+                regra_negocio_tipo = $1,
+                regra_negocio_descricao = $2,
+                regra_negocio_parametros = $3::jsonb,
+                usuario_atualizacao = $4,
+                dado_original = $5,
+                dado_normalizado = $6,
+                mensagem = $7,
+                origem_validacao = $8,
+                tipo_validacao = $9,
+                is_valido = $10,
+                data_validacao = $11,
+                app_name = $12,
+                client_identifier = $13,
+                regra_negocio_codigo = $14,
+                validation_details = $15::jsonb,
+                is_deleted = $16,
+                deleted_at = $17,
+                is_golden_record = $18,
+                golden_record_id = $19,
+                client_entity_id = $20,
+                status_qualificacao = $21,
+                last_enrichment_attempt_at = $22
+                -- updated_at é definido pelo trigger trg_validacoes_gerais_updated_at
+            WHERE id = $23
             RETURNING *;
         """
         try:
-            async with self.db_pool.acquire() as conn:
-                updated_row = await conn.fetchrow(query, *values)
+            async with self.db_manager.get_connection() as conn:
+                updated_row = await conn.fetchrow(
+                    query,
+                    record.regra_negocio_tipo, record.regra_negocio_descricao, json.dumps(record.regra_negocio_parametros),
+                    record.usuario_atualizacao, record.dado_original, record.dado_normalizado,
+                    record.mensagem, record.origem_validacao, record.tipo_validacao, record.is_valido, record.data_validacao,
+                    record.app_name, record.client_identifier, record.regra_negocio_codigo, json.dumps(record.validation_details),
+                    record.is_deleted, record.deleted_at,
+                    record.is_golden_record, record.golden_record_id, record.client_entity_id,
+                    record.status_qualificacao, record.last_enrichment_attempt_at,
+                    record_id # ID do registro a ser atualizado
+                )
                 if updated_row:
                     logger.info(f"Registro de validação {record_id} atualizado com sucesso.")
                     return self._row_to_validation_record(updated_row)
@@ -180,6 +123,87 @@ class ValidationRecordRepository:
                 return None
         except Exception as e:
             logger.error(f"Erro ao atualizar registro de validação {record_id}: {e}", exc_info=True)
+            raise
+
+    async def get_record_by_id(self, record_id: int, include_deleted: bool = False) -> Optional[ValidationRecord]:
+        """
+        Busca um registro pelo seu ID, opcionalmente incluindo os deletados logicamente.
+        """
+        query_base = "SELECT * FROM validacoes_gerais WHERE id = $1"
+        if not include_deleted:
+            query_base += " AND is_deleted = FALSE"
+
+        try:
+            async with self.db_manager.get_connection() as conn:
+                row = await conn.fetchrow(query_base, record_id)
+                return self._row_to_validation_record(row) if row else None
+        except Exception as e:
+            logger.error(f"Erro ao buscar registro por ID {record_id} (include_deleted={include_deleted}): {e}", exc_info=True)
+            return None
+
+    async def get_all_records_by_normalized_data(self, dado_normalizado: str, tipo_validacao: str) -> List[ValidationRecord]:
+        """
+        Busca TODOS os registros para um dado normalizado e tipo, de QUALQUER app_name,
+        excluindo os logicamente deletados.
+        """
+        query = """
+            SELECT * FROM validacoes_gerais
+            WHERE dado_normalizado = $1 AND tipo_validacao = $2 AND is_deleted = FALSE
+            ORDER BY data_validacao DESC;
+        """
+        try:
+            async with self.db_manager.get_connection() as conn:
+                rows = await conn.fetch(query, dado_normalizado, tipo_validacao)
+                return [self._row_to_validation_record(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erro ao buscar todos os registros por dado normalizado '{dado_normalizado}' ({tipo_validacao}): {e}", exc_info=True)
+            return []
+
+    async def update_golden_record_status(self, record_id: int, is_golden: bool, golden_record_id: Optional[int] = None) -> Optional[ValidationRecord]:
+        """
+        Atualiza o status de golden record para um registro específico.
+        """
+        query = """
+            UPDATE validacoes_gerais SET
+                is_golden_record = $1,
+                golden_record_id = $2,
+                updated_at = NOW() -- Definido pelo DB trigger
+            WHERE id = $3
+            RETURNING *;
+        """
+        try:
+            async with self.db_manager.get_connection() as conn:
+                row = await conn.fetchrow(query, is_golden, golden_record_id, record_id)
+                return self._row_to_validation_record(row) if row else None
+        except Exception as e:
+            logger.error(f"Erro ao atualizar status de golden record para {record_id}: {e}", exc_info=True)
+            raise
+
+    async def set_golden_record_false_for_normalized_data(self, dado_normalizado: str, tipo_validacao: str, exclude_id: Optional[int] = None):
+        """
+        Define is_golden_record para FALSE para todos os registros
+        de um dado normalizado e tipo, exceto um específico (que será o novo Golden Record).
+        Não atualiza golden_record_id aqui, essa atualização deve ser feita para cada registro individualmente
+        pelo ValidationService.
+        """
+        query_base = """
+            UPDATE validacoes_gerais SET
+                is_golden_record = FALSE,
+                updated_at = NOW() -- Definido pelo DB trigger
+            WHERE dado_normalizado = $1 AND tipo_validacao = $2
+            """
+        params = [dado_normalizado, tipo_validacao]
+        
+        if exclude_id is not None:
+            query_base += " AND id != $3"
+            params.append(exclude_id)
+        
+        try:
+            async with self.db_manager.get_connection() as conn:
+                await conn.execute(query_base, *params)
+            logger.info(f"Golden records anteriores desativados para {tipo_validacao}: {dado_normalizado}.")
+        except Exception as e:
+            logger.error(f"Erro ao desativar golden records antigos para {dado_normalizado} ({tipo_validacao}): {e}", exc_info=True)
             raise
 
     async def find_duplicate_record(self, dado_original: str, tipo_validacao: str, app_name: str) -> Optional[ValidationRecord]:
@@ -195,7 +219,7 @@ class ValidationRecordRepository:
             AND is_deleted = FALSE;
         """
         try:
-            async with self.db_pool.acquire() as conn:
+            async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(query, dado_original, tipo_validacao, app_name)
                 if row:
                     logger.info(f"Registro existente encontrado para '{dado_original}' ({tipo_validacao}, {app_name}).")
@@ -204,7 +228,7 @@ class ValidationRecordRepository:
                 return None
         except Exception as e:
             logger.error(f"Erro ao buscar registro duplicado para '{dado_original}' ({tipo_validacao}, {app_name}): {e}", exc_info=True)
-            return None # Retorna None para indicar que a busca falhou
+            return None
 
     async def get_last_records(self, limit: int = 10, include_deleted: bool = False) -> List[ValidationRecord]:
         """
@@ -216,7 +240,7 @@ class ValidationRecordRepository:
             query = "SELECT * FROM validacoes_gerais WHERE is_deleted = FALSE ORDER BY created_at DESC LIMIT $1;"
         
         try:
-            async with self.db_pool.acquire() as conn:
+            async with self.db_manager.get_connection() as conn:
                 rows = await conn.fetch(query, limit)
                 return [self._row_to_validation_record(row) for row in rows]
         except Exception as e:
@@ -226,16 +250,16 @@ class ValidationRecordRepository:
     async def soft_delete_record(self, record_id: int) -> bool:
         """
         Deleta logicamente um registro, marcando 'is_deleted' como TRUE e 'deleted_at' com a data atual.
+        `updated_at` é definido pelo trigger no DB.
         """
         query = """
             UPDATE validacoes_gerais
-            SET is_deleted = TRUE, deleted_at = $1, updated_at = $1
+            SET is_deleted = TRUE, deleted_at = $1 -- updated_at é definido pelo trigger
             WHERE id = $2 AND is_deleted = FALSE
             RETURNING id;
         """
         try:
-            async with self.db_pool.acquire() as conn:
-                # Usar datetime.now(timezone.utc) para consistência
+            async with self.db_manager.get_connection() as conn:
                 deleted_row_id = await conn.fetchval(query, datetime.now(timezone.utc), record_id)
                 if deleted_row_id:
                     logger.info(f"Registro {record_id} marcado como deletado logicamente.")
@@ -248,21 +272,22 @@ class ValidationRecordRepository:
     async def restore_record(self, record_id: int) -> bool:
         """
         Restaura um registro deletado logicamente, marcando 'is_deleted' como FALSE e 'deleted_at' como NULL.
+        `updated_at` é definido pelo trigger no DB.
         """
         query = """
             UPDATE validacoes_gerais
-            SET is_deleted = FALSE, deleted_at = NULL, updated_at = $1
-            WHERE id = $2 AND is_deleted = TRUE
+            SET is_deleted = FALSE, deleted_at = NULL -- updated_at é definido pelo trigger
+            WHERE id = $1 AND is_deleted = TRUE
             RETURNING id;
         """
         try:
-            async with self.db_pool.acquire() as conn:
-                # Usar datetime.now(timezone.utc) para consistência
-                restored_row_id = await conn.fetchval(query, datetime.now(timezone.utc), record_id)
+            async with self.db_manager.get_connection() as conn:
+                restored_row_id = await conn.fetchval(query, record_id)
                 if restored_row_id:
                     logger.info(f"Registro {record_id} restaurado com sucesso.")
                     return True
-                return False
+                logger.info(f"Nenhum registro deletado logicamente encontrado com o ID {record_id} para restauração.")
+                return False 
         except Exception as e:
             logger.error(f"Erro ao tentar restaurar record {record_id}: {e}", exc_info=True)
             raise

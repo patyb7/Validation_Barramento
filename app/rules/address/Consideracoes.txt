@@ -1,0 +1,4 @@
+Normalização: É crucial que ele normalize o endereço o máximo possível (maiúsculas/minúsculas, remoção de caracteres especiais, padronização de tipos de logradouro como "Rua" vs "R.", "Avenida" vs "Av.").
+Validação Estrutural: Verificar se os componentes do endereço (logradouro, número, bairro, cidade, estado, CEP) seguem padrões esperados.
+Validação de Existência/Geocodificação (Opcional, mas muito valioso): Para uma validação mais forte, o ideal seria integrar uma API de geocodificação (como Google Maps Geocoding API, OpenStreetMap Nominatim, ou uma API de endereço brasileira como ViaCEP para complementar ou mesmo serviços pagos para maior precisão e conformidade). Para este exemplo, farei uma simulação.
+Assincronicidade: Como é um validador, mantemos a natureza async para ser consistente com o ValidationService
