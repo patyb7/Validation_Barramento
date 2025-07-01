@@ -5,7 +5,7 @@ import sys
 
 # **IMPORTANTE: Configure a URL base da sua API aqui**
 # Se sua API estiver rodando localmente, por exemplo, na porta 5000
-BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:5000/api") 
+BASE_URL = os.environ.get("API_BASE_URL", "http://127.0.0.1:8001/api")
 # Adicione a raiz do projeto ao sys.path para que `app.rules` seja encontrado
 # Isso é crucial se você ainda estiver tendo problemas de importação com pytest
 # Remova se conseguir resolver o problema de sys.path do pytest de forma mais limpa (e.g., via conftest.py)

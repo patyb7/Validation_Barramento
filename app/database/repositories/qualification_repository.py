@@ -5,12 +5,15 @@ import uuid
 import asyncpg
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
+import json
 
 # Importar o DatabaseManager para obter conexões
 from app.database.manager import DatabaseManager
 # Importar os modelos Pydantic definidos anteriormente
 from app.models.qualificacao_pendente import QualificacaoPendente, InvalidosQualificados
 from app.models.validation_record import ValidationRecord # Necessário para buscar detalhes
+# Se você tiver um modelo ClientEntity, descomente e use aqui:
+# from app.models.client_entity import ClientEntity
 
 logger = logging.getLogger(__name__)
 
@@ -55,13 +58,38 @@ class QualificationRepository:
                 row = await conn.fetchrow(insert_sql, *params)
                 if row:
                     logger.info(f"Registro de qualificação pendente criado: {pending_record.id} para record {pending_record.validation_record_id}")
-                    return QualificacaoPendente.model_validate(row)
-            return None
+                    # --- CORREÇÃO APLICADA AQUI ---
+                    # Garante que o Pydantic receba um dicionário para validação,
+                    # o que é mais robusto para asyncpg.Record
+                    return QualificacaoPendente.model_validate(dict(row))
+                return None
         except asyncpg.exceptions.UniqueViolationError:
             logger.warning(f"Tentativa de criar qualificacao_pendente duplicada para validation_record_id: {pending_record.validation_record_id}")
             return None
         except Exception as e:
             logger.error(f"Erro ao criar registro de qualificação pendente para record {pending_record.validation_record_id}: {e}", exc_info=True)
+            return None
+
+    async def get_pending_qualification_by_validation_record_id(self, validation_record_id: uuid.UUID) -> Optional[QualificacaoPendente]:
+        """
+        Busca um registro de qualificação pendente pelo ID do ValidationRecord associado.
+        Retorna o objeto QualificacaoPendente se encontrado, caso contrário None.
+        """
+        select_sql = """
+            SELECT * FROM qualificacoes_pendentes
+            WHERE validation_record_id = $1;
+        """
+        try:
+            async with self.db_manager.get_connection() as conn:
+                row = await conn.fetchrow(select_sql, validation_record_id)
+                if row:
+                    logger.debug(f"Registro de qualificação pendente encontrado para validation_record_id: {validation_record_id}")
+                    # Aplicando a mesma robustez
+                    return QualificacaoPendente.model_validate(dict(row))
+                logger.debug(f"Nenhum registro de qualificação pendente encontrado para validation_record_id: {validation_record_id}")
+                return None
+        except Exception as e:
+            logger.error(f"Erro ao buscar qualificacao_pendente por validation_record_id {validation_record_id}: {e}", exc_info=True)
             return None
 
     async def get_pending_qualifications_for_revalidation(self, limit: int = 100) -> List[QualificacaoPendente]:
@@ -79,7 +107,8 @@ class QualificationRepository:
         try:
             async with self.db_manager.get_connection() as conn:
                 rows = await conn.fetch(select_sql, now, limit)
-                return [QualificacaoPendente.model_validate(row) for row in rows]
+                # Aplicando a mesma robustez
+                return [QualificacaoPendente.model_validate(dict(row)) for row in rows]
         except Exception as e:
             logger.error(f"Erro ao buscar registros pendentes para revalidação: {e}", exc_info=True)
             return []
@@ -112,8 +141,9 @@ class QualificationRepository:
                 row = await conn.fetchrow(update_sql, *params)
                 if row:
                     logger.info(f"Registro de qualificação pendente atualizado: {pending_record.id}")
-                    return QualificacaoPendente.model_validate(row)
-            return None
+                    # Aplicando a mesma robustez
+                    return QualificacaoPendente.model_validate(dict(row))
+                return None
         except Exception as e:
             logger.error(f"Erro ao atualizar registro de qualificação pendente {pending_record.id}: {e}", exc_info=True)
             return None
@@ -129,7 +159,7 @@ class QualificationRepository:
                 if status == "DELETE 1":
                     logger.info(f"Registro de qualificação pendente {pending_id} removido.")
                     return True
-            return False
+                return False
         except Exception as e:
             logger.error(f"Erro ao remover registro de qualificação pendente {pending_id}: {e}", exc_info=True)
             return False
@@ -157,8 +187,9 @@ class QualificationRepository:
                 row = await conn.fetchrow(insert_sql, *params)
                 if row:
                     logger.info(f"Registro arquivado como inválido: {invalid_record.id} para record {invalid_record.validation_record_id}")
-                    return InvalidosQualificados.model_validate(row)
-            return None
+                    # Aplicando a mesma robustez
+                    return InvalidosQualificados.model_validate(dict(row))
+                return None
         except asyncpg.exceptions.UniqueViolationError:
             logger.warning(f"Tentativa de arquivar invalidos_desqualificados duplicado para validation_record_id: {invalid_record.validation_record_id}")
             return None
@@ -175,13 +206,17 @@ class QualificationRepository:
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(select_sql, validation_record_id)
                 if row:
-                    return InvalidosQualificados.model_validate(row)
-            return None
+                    # Aplicando a mesma robustez
+                    return InvalidosQualificados.model_validate(dict(row))
+                return None
         except Exception as e:
             logger.error(f"Erro ao buscar registro inválido por validation_record_id {validation_record_id}: {e}", exc_info=True)
             return None
-
+    
     # --- Métodos para interagir com a tabela client_entities (Golden Records) ---
+    # Sugestão: Criar um modelo Pydantic para ClientEntity para melhor tipagem
+    # Ex: from app.models.client_entity import ClientEntity
+
     async def get_client_entity_by_main_document(self, main_document_normalized: str) -> Optional[Dict[str, Any]]:
         """
         Busca um Golden Record existente na tabela client_entities pelo documento principal normalizado (CPF/CNPJ).
@@ -194,9 +229,9 @@ class QualificationRepository:
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(select_sql, main_document_normalized)
                 if row:
-                    # Retorna o dicionário raw ou pode ser um modelo Pydantic ClientEntity se você criar um
+                    # Se você tiver um modelo ClientEntity, use: return ClientEntity.model_validate(dict(row))
                     return dict(row)
-            return None
+                return None
         except Exception as e:
             logger.error(f"Erro ao buscar client_entity por documento principal: {e}", exc_info=True)
             return None
@@ -205,6 +240,7 @@ class QualificationRepository:
         """
         Cria um novo Golden Record na tabela 'client_entities'.
         client_entity_data deve ser um dicionário com os campos da tabela.
+        Assumimos que o 'id' da tabela client_entities é gerado automaticamente pelo banco de dados.
         """
         insert_sql = """
             INSERT INTO client_entities (
@@ -214,34 +250,40 @@ class QualificationRepository:
                 golden_record_phone_id,
                 golden_record_email_id,
                 golden_record_cep_id,
-                consolidated_data,
+                golden_record_rg_id, -- Adicionado este campo para consistência com o _get_golden_record_link_ids
+                consolidated_data, 
                 relationship_type,
                 cclub,
                 created_at, updated_at
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
             ) RETURNING *;
         """
+        
+        # NOTE: A ordem dos parâmetros aqui DEVE corresponder à ordem dos $ na query SQL.
+        # Adicione 'golden_record_rg_id' ao get para que a ordem dos parâmetros seja consistente
         params = (
-            client_entity_data.get("main_document_normalized"),
-            client_entity_data.get("golden_record_cpf_cnpj_id"),
-            client_entity_data.get("golden_record_address_id"),
-            client_entity_data.get("golden_record_phone_id"),
-            client_entity_data.get("golden_record_email_id"),
-            client_entity_data.get("golden_record_cep_id"),
-            client_entity_data.get("consolidated_data", {}), # Garantir que é um dict para JSONB
-            client_entity_data.get("relationship_type"),
-            client_entity_data.get("cclub"),
-            datetime.now(timezone.utc),
-            datetime.now(timezone.utc)
+            client_entity_data.get("main_document_normalized"), 
+            client_entity_data.get("golden_record_cpf_cnpj_id"), 
+            client_entity_data.get("golden_record_address_id"), 
+            client_entity_data.get("golden_record_phone_id"), 
+            client_entity_data.get("golden_record_email_id"), 
+            client_entity_data.get("golden_record_cep_id"), 
+            client_entity_data.get("golden_record_rg_id"), # Parâmetro correspondente ao $7
+            json.dumps(client_entity_data.get("consolidated_data", {})), 
+            client_entity_data.get("relationship_type"), 
+            client_entity_data.get("cclub"), 
+            datetime.now(timezone.utc), 
+            datetime.now(timezone.utc) 
         )
         try:
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(insert_sql, *params)
                 if row:
                     logger.info(f"Golden Record criado para {client_entity_data.get('main_document_normalized')}: {row['id']}")
+                    # Se você tiver um modelo ClientEntity, use: return ClientEntity.model_validate(dict(row))
                     return dict(row)
-            return None
+                return None
         except asyncpg.exceptions.UniqueViolationError:
             logger.warning(f"Tentativa de criar Golden Record duplicado para main_document_normalized: {client_entity_data.get('main_document_normalized')}")
             return None
@@ -261,10 +303,21 @@ class QualificationRepository:
         for key, value in update_data.items():
             if key in ["main_document_normalized", "created_at", "id"]: # Não permitir update desses campos via este método
                 continue
-            set_clauses.append(f"{key} = ${param_counter}")
-            params.append(value)
+            
+            # **CORREÇÃO AQUI para lidar com JSONB em updates**
+            if key == "consolidated_data":
+                set_clauses.append(f"{key} = ${param_counter}::jsonb") # Explicitamente cast para jsonb
+                params.append(json.dumps(value)) # Serializa o dict para string JSON
+            else:
+                set_clauses.append(f"{key} = ${param_counter}")
+                params.append(value)
             param_counter += 1
         
+        # Adicionar updated_at automaticamente na atualização
+        set_clauses.append(f"updated_at = ${param_counter}")
+        params.append(datetime.now(timezone.utc))
+        param_counter += 1 # Incrementar para o próximo placeholder, que será o ID
+
         if not set_clauses:
             logger.warning(f"Nenhum campo para atualizar para client_entity_id {client_entity_id}.")
             return None
@@ -282,8 +335,9 @@ class QualificationRepository:
                 row = await conn.fetchrow(update_sql, *params)
                 if row:
                     logger.info(f"Golden Record atualizado para ID {client_entity_id}")
+                    # Se você tiver um modelo ClientEntity, use: return ClientEntity.model_validate(dict(row))
                     return dict(row)
-            return None
+                return None
         except Exception as e:
             logger.error(f"Erro ao atualizar Golden Record {client_entity_id}: {e}", exc_info=True)
             return None
@@ -300,8 +354,9 @@ class QualificationRepository:
             async with self.db_manager.get_connection() as conn:
                 row = await conn.fetchrow(select_sql, record_id)
                 if row:
-                    return ValidationRecord.model_validate(row)
-            return None
+                    # Aplicando a mesma robustez
+                    return ValidationRecord.model_validate(dict(row))
+                return None
         except Exception as e:
             logger.error(f"Erro ao obter detalhes do ValidationRecord {record_id}: {e}", exc_info=True)
             return None

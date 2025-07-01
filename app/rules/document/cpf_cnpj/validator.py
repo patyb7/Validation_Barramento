@@ -5,6 +5,9 @@ import re
 from typing import Dict, Any, Optional, Union
 from app.rules.base import BaseValidator # Ensure this import is correct
 
+# Importa a base de dados simulada
+from app.tests.simulated_data import SIMULATED_CPF_DATABASE, SIMULATED_CNPJ_DATABASE
+
 logger = logging.getLogger(__name__)
 
 class CpfCnpjValidator(BaseValidator):
@@ -26,17 +29,9 @@ class CpfCnpjValidator(BaseValidator):
     def __init__(self):
         super().__init__(origin_name="CpfCnpjValidator") # Initialize BaseValidator
         logger.info("CpfCnpjValidator inicializado.")
-        # Simulação de uma base de dados cadastral de clientes
-        # Em um cenário real, isso seria uma consulta a um banco de dados,
-        # um serviço de cache, ou uma API externa (e.g., Receita Federal, Serasa).
-        self.simulated_customer_database = {
-            "11122233344": {"name": "Cliente Exemplo CPF Válido", "status_receita_federal": "REGULAR", "is_active": True},
-            "55566677788": {"name": "Cliente Exemplo CPF Irregular", "status_receita_federal": "SUSPENSO", "is_active": False},
-            "00000000000": {"name": "CPF Sequencial Inválido", "status_receita_federal": None, "is_active": False}, # Exemplo de CPF inválido por algoritmo
-            "12345678000190": {"name": "Empresa Teste CNPJ Válido", "status_receita_federal": "ATIVA", "is_active": True},
-            "98765432000121": {"name": "Empresa Teste CNPJ Baixada", "status_receita_federal": "BAIXADA", "is_active": False},
-            "11111111111111": {"name": "CNPJ Sequencial Inválido", "status_receita_federal": None, "is_active": False}, # Exemplo de CNPJ inválido por algoritmo
-        }
+        # As bases de dados simuladas agora são importadas de simulated_data.py
+        self.simulated_cpf_database = SIMULATED_CPF_DATABASE
+        self.simulated_cnpj_database = SIMULATED_CNPJ_DATABASE
 
     async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # MÉTODO PADRONIZADO 'validate'
         """
@@ -64,7 +59,7 @@ class CpfCnpjValidator(BaseValidator):
         if not isinstance(document_number, str) or not document_number.strip():
             return self._format_result(
                 is_valid=False,
-                dado_original=document_number, # Adicionado
+                dado_original=document_number,
                 dado_normalizado=None,
                 mensagem="Documento vazio ou tipo inválido.",
                 details={"input_original": document_number},
@@ -78,10 +73,6 @@ class CpfCnpjValidator(BaseValidator):
         is_valid_format = False
         is_valid_checksum = False
         document_type = None
-        status_cadastro = None
-        is_active_in_db = False
-        customer_name = None
-        
         validation_message = "Documento inválido."
         business_rule_code = self.RN_DOC002 # Default for invalid format
         logger.debug(f"Documento normalizado: {normalized_document}, é CPF: {is_cpf}, é CNPJ: {is_cnpj}")
@@ -92,8 +83,10 @@ class CpfCnpjValidator(BaseValidator):
             "status_receita_federal": None,
             "is_active_in_database": False,
             "customer_name": None,
-            "reason": []
+            "reason": [],
+            "input_original": document_number # Adicionado input_original nos details
         }
+
         if is_cpf:
             document_type = "CPF"
             is_valid_format = True
@@ -132,22 +125,28 @@ class CpfCnpjValidator(BaseValidator):
             business_rule_code = self.RN_DOC002
             details["reason"].append("invalid_document_format")
             
-        # If format or checksum are invalid, no need to consult the database
-        if not is_valid_format or not is_valid_checksum:
+        # If format or checksum are invalid (or all digits are same), no need to consult the database
+        if not is_valid_format or not is_valid_checksum or business_rule_code == self.RN_DOC004:
             return self._format_result(
                 is_valid=False,
-                dado_original=document_number, # Adicionado
+                dado_original=document_number,
                 dado_normalizado=normalized_document,
                 mensagem=validation_message,
                 details=details,
                 business_rule_applied={"code": business_rule_code, "type": "Documento - Validação Primária", "name": "Formato/Checksum Inválido"}
             )
+        
         # Se o formato e o checksum forem válidos, prossegue para a consulta na base de dados
         logger.info(f"{document_type} com formato e checksum válidos. Consultando base de dados cadastral...")
-        # Simulate querying the customer database
-        logger.debug(f"Consultando base de clientes para {document_type}: {normalized_document}")
-        customer_data = self.simulated_customer_database.get(normalized_document)
+        
+        # Simulate querying the customer database based on document type
+        customer_data = None
+        if document_type == "CPF":
+            customer_data = self.simulated_cpf_database.get(normalized_document)
+        elif document_type == "CNPJ":
+            customer_data = self.simulated_cnpj_database.get(normalized_document)
 
+        is_valid = False # Assume inválido até ser provado o contrário pela base de dados
         if customer_data:
             status_cadastro = customer_data.get("status_receita_federal")
             is_active_in_db = customer_data.get("is_active", False)
@@ -165,18 +164,18 @@ class CpfCnpjValidator(BaseValidator):
                 business_rule_code = self.RN_DOC005
                 details["reason"].append("document_inactive_in_database")
         else:
-            validation_message = f"{document_type} válido (checksum), mas não encontrado na base cadastral."
+            validation_message = f"{document_type} válido (checksum), mas não encontrado na base cadastral simulada."
             is_valid = False
             business_rule_code = self.RN_DOC006
             details["reason"].append("document_not_found_in_database")
             
         return self._format_result(
             is_valid=is_valid,
-            dado_original=document_number, # Adicionado
+            dado_original=document_number,
             dado_normalizado=normalized_document,
             mensagem=validation_message,
             details=details,
-            business_rule_applied={"code": business_rule_code, "type": "Documento - Validação Primária", "name": "Validação Final de Documento"}
+            business_rule_applied={"code": business_rule_code, "type": "Documento - Validação Final", "name": validation_message}
         )
 
     def _normalize_document(self, document: str) -> str:
@@ -190,7 +189,7 @@ class CpfCnpjValidator(BaseValidator):
         if not re.fullmatch(r'\d{11}', cpf):
             return False
 
-        # Verifica se todos os dígitos são iguais (ex: '11111111111')
+        # Já verificado antes, mas para robustez, mantém aqui também
         if len(set(cpf)) == 1:
             return False
 
@@ -216,7 +215,7 @@ class CpfCnpjValidator(BaseValidator):
         if not re.fullmatch(r'\d{14}', cnpj):
             return False
         
-        # Verifica se todos os dígitos são iguais (ex: '11111111111111')
+        # Já verificado antes, mas para robustez, mantém aqui também
         if len(set(cnpj)) == 1:
             return False
 

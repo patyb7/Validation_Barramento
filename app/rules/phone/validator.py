@@ -49,6 +49,7 @@ class PhoneValidator(BaseValidator):
             "+5516994130828": {"is_active": True, "is_fraud_risk": False, "customer_name": "Maria Oliveira"},
             "+5516983974673": {"is_active": True, "is_fraud_risk": True, "customer_name": "Pedro Souza"}, # Exemplo de risco de fraude
             "+12025550100": {"is_active": False, "is_fraud_risk": False, "customer_name": "Alice Wonderland"}, # Exemplo inativo
+            "+551123717093": {"is_active": True, "is_fraud_risk": False, "customer_name": "Ana Paula Silva Souza"},
         }
         # Mapeamento para nomes de tipo de telefone, caso a biblioteca não forneça um método direto
         self._phone_type_names = {
@@ -159,10 +160,10 @@ class PhoneValidator(BaseValidator):
                         business_rule_code = PhoneRuleCodes.RN_TEL007
                         details["reason"].append("special_service_type")
                     elif num_type == PhoneNumberType.UNKNOWN:
-                         message = f"Telefone válido, mas o tipo é desconhecido: {details['phone_type']}."
-                         is_valid = True # Consideramos válido, mas com aviso
-                         business_rule_code = PhoneRuleCodes.RN_TEL010
-                         details["reason"].append("unknown_phone_type")
+                        message = f"Telefone válido, mas o tipo é desconhecido: {details['phone_type']}."
+                        is_valid = True # Consideramos válido, mas com aviso
+                        business_rule_code = PhoneRuleCodes.RN_TEL010
+                        details["reason"].append("unknown_phone_type")
                     else:
                         is_valid = True
                         message = "Número de telefone válido (formato e checksum via phonenumbers)."
@@ -214,7 +215,16 @@ class PhoneValidator(BaseValidator):
 
         # 2. Simular consulta em base de dados cadastral (se o número for válido até aqui)
         # Usar o formato internacional como chave para a base de dados simulada, se disponível
-        db_lookup_key = details.get("international_format") or normalized_phone
+        # CORREÇÃO: Normalizar a chave de busca para remover espaços ou outros caracteres de formatação
+        db_lookup_key = details.get("international_format")
+        if db_lookup_key:
+            # Remove todos os caracteres não-dígitos, exceto o sinal de '+' inicial
+            # para corresponder ao formato da base de dados simulada.
+            db_lookup_key = "+" + re.sub(r'\D', '', db_lookup_key.lstrip('+'))
+        else:
+            # Fallback se o formato internacional não foi gerado (improvável se is_valid_number for True)
+            db_lookup_key = re.sub(r'\D', '', normalized_phone) # Remove todos os não-dígitos
+        
         customer_data = self.simulated_customer_database.get(db_lookup_key)
 
         if customer_data:

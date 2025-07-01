@@ -2,11 +2,8 @@
 
 import pytest
 from app.rules.phone.validator import PhoneValidator
-from app.rules.phone.validator import (VAL_PHN001, VAL_PHN002, VAL_PHN003, VAL_PHN004, VAL_PHN005, VAL_PHN006,
-    VAL_PHN010, VAL_PHN011, VAL_PHN012, VAL_PHN013, VAL_PHN014, VAL_PHN015,
-    VAL_PHN016, VAL_PHN020, PHONENUMBERS_AVAILABLE
-)
-
+from app.rules.phone.validator import PhoneRuleCodes
+from app.rules.phone.validator import PhoneValidator, PhoneRuleCodes, PHONENUMBERS_AVAILABLE
 @pytest.fixture
 def phone_validator():
     return PhoneValidator()

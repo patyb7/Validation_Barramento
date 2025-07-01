@@ -5,6 +5,9 @@ import logging
 from typing import Dict, Any, Optional
 from app.rules.base import BaseValidator
 
+# Importa a base de dados simulada do arquivo centralizado
+from app.tests.simulated_data import SIMULATED_RG_DATABASE
+
 logger = logging.getLogger(__name__)
 
 class RGValidator(BaseValidator):
@@ -13,23 +16,19 @@ class RGValidator(BaseValidator):
     Realiza validação de formato e comprimento, e simula uma consulta a uma base cadastral.
     """
     # Códigos de Regra específicos para validação de RG (Padronização RN_RGxxx)
-    RN_RG001 = "RN_RG001"  # RG Válido e Ativo
-    RN_RG002 = "RN_RG002"  # Formato de RG inválido (não é numérico, ou comprimento incorreto)
-    RN_RG003 = "RN_RG003"  # RG com dígito verificador inválido (se aplicável, para RGs mais complexos) - SIMULADO
-    RN_RG004 = "RN_RG004"  # RG com todos os dígitos iguais (ex: 11.111.111-1)
-    RN_RG005 = "RN_RG005"  # RG válido (formato/checksum), mas inativo/suspenso na base cadastral
-    RN_RG006 = "RN_RG006"  # RG válido (formato/checksum), mas não encontrado na base cadastral
-    RN_RG007 = "RN_RG007"  # Input vazio ou tipo inválido (não string, ou string vazia)
+    RN_RG001 = "RN_RG001"   # RG Válido e Ativo
+    RN_RG002 = "RN_RG002"   # Formato de RG inválido (não é numérico, ou comprimento incorreto)
+    RN_RG003 = "RN_RG003"   # RG com dígito verificador inválido (se aplicável, para RGs mais complexos) - SIMULADO
+    RN_RG004 = "RN_RG004"   # RG com todos os dígitos iguais (ex: 11.111.111-1)
+    RN_RG005 = "RN_RG005"   # RG válido (formato/checksum), mas inativo/suspenso na base cadastral
+    RN_RG006 = "RN_RG006"   # RG válido (formato/checksum), mas não encontrado na base cadastral
+    RN_RG007 = "RN_RG007"   # Input vazio ou tipo inválido (não string, ou string vazia)
 
     def __init__(self):
         super().__init__(origin_name="rg_validator")
         logger.info("RGValidator inicializado.")
-        # Simulação de uma base de dados cadastral de RGs
-        self.simulated_rg_database = {
-            "123456789": {"name": "Marcos Lucca Danilo Galvão", "status": "ATIVO", "is_active": True},
-            "39143580840": {"name": "Lara Amanda Fernandes", "status": "BLOQUEADO", "is_active": False},
-            "111111111": {"name": "RG Sequencial Inválido", "status": None, "is_active": False},
-        }
+        # A base de dados simulada agora é importada de simulated_data.py
+        self.simulated_rg_database = SIMULATED_RG_DATABASE
 
     async def validate(self, data: Any, **kwargs) -> Dict[str, Any]:
         """
@@ -49,7 +48,7 @@ class RGValidator(BaseValidator):
         if not isinstance(rg_number, str) or not rg_number.strip():
             return self._format_result(
                 is_valid=False,
-                dado_original=rg_number, # Adicionado dado_original
+                dado_original=rg_number,
                 dado_normalizado=None,
                 mensagem="RG vazio ou tipo inválido.",
                 details={"input_original": rg_number},
@@ -92,11 +91,11 @@ class RGValidator(BaseValidator):
             business_rule_code = self.RN_RG002
             details["reason"].append("invalid_format")
 
-        # Se o formato for inválido, retorna imediatamente
+        # Se o formato for inválido ou todos os dígitos são iguais, retorna imediatamente
         if not is_valid_format or business_rule_code == self.RN_RG004:
             return self._format_result(
                 is_valid=False,
-                dado_original=rg_number, # Adicionado dado_original
+                dado_original=rg_number,
                 dado_normalizado=normalized_rg,
                 mensagem=validation_message,
                 details=details,

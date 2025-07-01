@@ -1,5 +1,6 @@
 # app/tests/test_enrichment_qualification.py
 import requests
+import random
 import json
 import uuid # Para gerar IDs únicos
 from typing import Optional, Dict, Any

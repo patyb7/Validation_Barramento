@@ -33,10 +33,10 @@ from app.rules.pessoa.rg.validator import RGValidator
 from app.rules.pessoa.data_nascimento.validator import DataNascimentoValidator
 from app.rules.pessoa.composite_validator import PessoaFullValidacao
 
-# Importar os APIRouters
+# Importar os APIRouters (importado apenas uma vez)
 from app.api.routers.health import router as health_router
 from app.api.routers.history import router as history_router
-from app.api.routers.validation import router as validation_router # Importa o router de validação
+from app.api.routers.validation import router as validation_router
 
 # Configuração de logging centralizada
 logging.basicConfig(
@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI):
         sexo_validator=sexo_validator,
         rg_validator=rg_validator,
         data_nascimento_validator=data_nascimento_validator,
+        pessoa_full_validacao_validator=pessoa_full_validacao_validator, # INJETADO O VALIDADOR COMPOSTO AQUI
         log_repo=log_repo
     )
     
@@ -301,18 +302,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # --- Rotas da API ---
 
-# Removidas as definições diretas de endpoints, este arquivo agora apenas inclui os routers.
-# As definições desses endpoints estão agora nos seus respectivos arquivos de router (health.py, history.py, validation.py).
-
 @app.get("/", summary="Raiz da API", tags=["Status"])
 async def root():
     return {"message": "Bem-vindo ao Barramento de Validação de Dados. Acesse /docs para a documentação da API."}
 
-# Incluindo os routers para que suas rotas sejam registradas
-from app.api.routers.health import router as health_router
-from app.api.routers.history import router as history_router
-from app.api.routers.validation import router as validation_router
-
+# Incluindo os routers para que suas rotas sejam registradas (agora apenas uma vez)
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(history_router, prefix="/api/v1")
 app.include_router(validation_router, prefix="/api/v1")
@@ -320,8 +314,6 @@ app.include_router(validation_router, prefix="/api/v1")
 
 if __name__ == "__main__":
     import uvicorn
-    # Se você estiver rodando este arquivo (api_main.py) diretamente
-    # certifique-se de que o comando uvicorn esteja apontando para ele
     uvicorn.run(
         "app.api.api_main:app", # CORRIGIDO: Referência ao módulo correto
         host="0.0.0.0",

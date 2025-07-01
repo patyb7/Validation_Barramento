@@ -1,5 +1,6 @@
+# app/rules/pessoa/composite_validator.py
 import logging
-from typing import Dict, Any, List, Optional, Union # Adicionada Union
+from typing import Dict, Any, List, Optional, Union, Tuple # Adicionada Tuple
 from app.rules.base import BaseValidator
 from app.rules.phone.validator import PhoneValidator
 from app.rules.address.cep.validator import CEPValidator
@@ -44,6 +45,31 @@ class PessoaFullValidacao(BaseValidator): # Classe renomeada
         self.data_nascimento_validator = data_nascimento_validator
         logger.info("PessoaFullValidacao inicializado.") # Log atualizado
 
+    async def _perform_individual_validation(
+        self,
+        validator: BaseValidator,
+        field_name: str,
+        data_value: Any,
+        results: Dict[str, Any],
+        error_message_prefix: str,
+        normalized_data_key: Optional[str] = None # Para casos onde a chave normalizada é diferente do field_name
+    ) -> None:
+        """
+        Executa uma validação individual e atualiza o dicionário de resultados.
+        """
+        if data_value is not None:
+            validation_result = await validator.validate(data_value)
+            results["details"]["individual_validations"][field_name] = validation_result
+            if not validation_result.get("is_valid"):
+                results["is_valid"] = False
+                results["details"]["errors_summary"].append(
+                    f"{error_message_prefix}: {validation_result.get('mensagem', 'Inválido.')}"
+                )
+            else:
+                key_to_use = normalized_data_key if normalized_data_key else field_name
+                if validation_result.get("dado_normalizado") is not None:
+                    results["normalized_data"][key_to_use] = validation_result.get("dado_normalizado")
+
     async def validate(self, data: Union[Dict[str, Any], PersonDataModel], **kwargs) -> Dict[str, Any]:
         """
         Valida um dicionário ou modelo Pydantic contendo múltiplos dados de uma pessoa.
@@ -54,7 +80,8 @@ class PessoaFullValidacao(BaseValidator): # Classe renomeada
             "overall_message": "Validação de pessoa concluída.",
             "normalized_data": {},
             "details": {
-                "individual_validations": {}
+                "individual_validations": {},
+                "errors_summary": [] # Lista para acumular mensagens de erro específicas
             },
             "business_rule_applied": {
                 "code": "RNT_PER001",
@@ -63,149 +90,115 @@ class PessoaFullValidacao(BaseValidator): # Classe renomeada
             }
         }
 
-        # Extrai o client_identifier, se disponível nos kwargs
         client_identifier = kwargs.get('client_identifier')
 
-        # Converte para dicionário se for um modelo Pydantic para acesso uniforme
-        # No entanto, vamos preferir acessar como atributo e usar getattr para segurança
-        # data_dict = data.model_dump() if isinstance(data, BaseModel) else data
+        # Centraliza o acesso aos dados convertendo para dicionário
+        data_dict = data.model_dump() if isinstance(data, PersonDataModel) else data
 
         # Validação de Nome
-        # Acessa como atributo, com fallback para None se não existir
-        nome = getattr(data, "nome", None)
-        if nome is not None:
-            nome_result = await self.nome_validator.validate(nome)
-            results["details"]["individual_validations"]["nome"] = nome_result
-            if not nome_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de nome falhou."
-            else:
-                results["normalized_data"]["nome"] = nome_result.get("dado_normalizado")
-
+        await self._perform_individual_validation(
+            self.nome_validator, "nome", data_dict.get("nome"), results, "Nome"
+        )
 
         # Validação de CPF
-        cpf = getattr(data, "cpf", None)
-        if cpf is not None:
-            cpf_result = await self.cpf_cnpj_validator.validate(cpf)
-            results["details"]["individual_validations"]["cpf"] = cpf_result
-            if not cpf_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de CPF falhou."
-            else:
-                results["normalized_data"]["cpf"] = cpf_result.get("dado_normalizado")
-
+        await self._perform_individual_validation(
+            self.cpf_cnpj_validator, "cpf", data_dict.get("cpf"), results, "CPF"
+        )
 
         # Validação de RG
-        rg = getattr(data, "rg", None)
-        if rg is not None:
-            rg_result = await self.rg_validator.validate(rg)
-            results["details"]["individual_validations"]["rg"] = rg_result
-            if not rg_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de RG falhou."
-            else:
-                results["normalized_data"]["rg"] = rg_result.get("dado_normalizado")
+        await self._perform_individual_validation(
+            self.rg_validator, "rg", data_dict.get("rg"), results, "RG"
+        )
 
         # Validação de Data de Nascimento
-        data_nasc = getattr(data, "data_nasc", None)
-        if data_nasc is not None:
-            data_nasc_result = await self.data_nascimento_validator.validate(data_nasc)
-            results["details"]["individual_validations"]["data_nascimento"] = data_nasc_result
-            if not data_nasc_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de data de nascimento falhou."
-            else:
-                results["normalized_data"]["data_nascimento"] = data_nasc_result.get("dado_normalizado")
+        # Note: o campo no PersonDataModel é 'data_nascimento', seu código original usava 'data_nasc'
+        # Ajustei para 'data_nascimento' para consistência com o modelo
+        await self._perform_individual_validation(
+            self.data_nascimento_validator, "data_nascimento", data_dict.get("data_nasc"), results, "Data de Nascimento"
+        )
 
         # Validação de Gênero/Sexo
-        sexo = getattr(data, "sexo", None)
-        if sexo is not None:
-            sexo_result = await self.sexo_validator.validate(sexo)
-            results["details"]["individual_validations"]["sexo"] = sexo_result
-            if not sexo_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de gênero/sexo falhou."
-            else:
-                results["normalized_data"]["sexo"] = sexo_result.get("dado_normalizado")
+        await self._perform_individual_validation(
+            self.sexo_validator, "sexo", data_dict.get("sexo"), results, "Gênero/Sexo"
+        )
 
         # Validação de Email
-        email = getattr(data, "email", None)
-        if email is not None:
-            email_result = await self.email_validator.validate(email)
-            results["details"]["individual_validations"]["email"] = email_result
-            if not email_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de email falhou."
-            else:
-                results["normalized_data"]["email"] = email_result.get("dado_normalizado")
+        await self._perform_individual_validation(
+            self.email_validator, "email", data_dict.get("email"), results, "Email"
+        )
 
         # Validação de CEP
-        cep = getattr(data, "cep", None)
-        if cep is not None:
-            cep_result = await self.cep_validator.validate(cep)
-            results["details"]["individual_validations"]["cep"] = cep_result
-            if not cep_result.get("is_valid"):
-                results["is_valid"] = False
-                results["overall_message"] = "Validação de CEP falhou."
-            else:
-                results["normalized_data"]["cep"] = cep_result.get("dado_normalizado")
-
-        # Validação de Endereço (pode precisar de mais campos do dict)
-        endereco_completo = {
-            "logradouro": getattr(data, "endereco", None),
-            "numero": getattr(data, "numero", None),
-            "bairro": getattr(data, "bairro", None),
-            "cidade": getattr(data, "cidade", None),
-            "estado": getattr(data, "estado", None),
-            "cep": getattr(data, "cep", None) # Passa o CEP também para o validador de endereço
+        await self._perform_individual_validation(
+            self.cep_validator, "cep", data_dict.get("cep"), results, "CEP"
+        )
+        
+        # Validação de Endereço Completo
+        # Coleta todos os campos de endereço que o validador de endereço espera
+        endereco_input = {
+            "logradouro": data_dict.get("logradouro"),
+            "numero": data_dict.get("numero"),
+            "complemento": data_dict.get("complemento"), # Se houver
+            "bairro": data_dict.get("bairro"),
+            "cidade": data_dict.get("cidade"),
+            "estado": data_dict.get("estado"),
+            "cep": data_dict.get("cep") # Passa o CEP também para o validador de endereço
         }
-        # Filtra valores None para evitar erros nos validadores downstream se não esperarem None
-        endereco_completo = {k: v for k, v in endereco_completo.items() if v is not None}
+        # Filtra valores None para evitar passar chaves com valor None para o validador
+        endereco_input = {k: v for k, v in endereco_input.items() if v is not None}
 
-        if endereco_completo: # Verifica se há dados para validar o endereço
-            address_result = await self.address_validator.validate(endereco_completo)
+        if endereco_input: # Verifica se há dados para validar o endereço
+            address_result = await self.address_validator.validate(endereco_input)
             results["details"]["individual_validations"]["endereco"] = address_result
             if not address_result.get("is_valid"):
                 results["is_valid"] = False
-                results["overall_message"] = "Validação de endereço falhou."
+                results["details"]["errors_summary"].append(
+                    f"Endereço: {address_result.get('mensagem', 'Inválido.')}"
+                )
             else:
                 results["normalized_data"]["endereco"] = address_result.get("dado_normalizado")
 
-
         # Validação de Telefone Fixo
-        telefone_fixo = getattr(data, "telefone_fixo", None)
+        telefone_fixo = data_dict.get("telefone_fixo")
         if telefone_fixo is not None:
-            # Passa o client_identifier para o validador de telefone, se existir
             phone_fixo_result = await self.phone_validator.validate(telefone_fixo, client_identifier=client_identifier)
             results["details"]["individual_validations"]["telefone_fixo"] = phone_fixo_result
             if not phone_fixo_result.get("is_valid"):
                 results["is_valid"] = False
-                results["overall_message"] = "Validação de telefone fixo falhou."
+                results["details"]["errors_summary"].append(
+                    f"Telefone Fixo: {phone_fixo_result.get('mensagem', 'Inválido.')}"
+                )
             else:
                 results["normalized_data"]["telefone_fixo"] = phone_fixo_result.get("dado_normalizado")
 
         # Validação de Celular
-        celular = getattr(data, "celular", None)
+        celular = data_dict.get("celular")
         if celular is not None:
-            # Passa o client_identifier para o validador de telefone, se existir
             celular_result = await self.phone_validator.validate(celular, client_identifier=client_identifier)
             results["details"]["individual_validations"]["celular"] = celular_result
             if not celular_result.get("is_valid"):
                 results["is_valid"] = False
-                results["overall_message"] = "Validação de celular falhou."
+                results["details"]["errors_summary"].append(
+                    f"Celular: {celular_result.get('mensagem', 'Inválido.')}"
+                )
             else:
                 results["normalized_data"]["celular"] = celular_result.get("dado_normalizado")
         
-        # Consolida dado normalizado (opcional, pode ser o CPF normalizado ou uma combinação)
-        if results["is_valid"] and results["overall_message"] == "Validação de pessoa concluída.":
+        # Consolida dado normalizado e define a mensagem geral
+        if results["is_valid"]:
             results["overall_message"] = "Todos os dados de pessoa válidos."
-        elif not results["is_valid"] and results["overall_message"] == "Validação de pessoa concluída.":
-             # Se a validação geral falhou e a mensagem não foi atualizada por um sub-validador
-             results["overall_message"] = "Pelo menos um dado de pessoa falhou na validação."
-
+        else:
+            # Se a validação geral falhou, e há um summary de erros, use-o
+            if results["details"]["errors_summary"]:
+                results["overall_message"] = "Falha na validação de um ou mais campos: " + "; ".join(results["details"]["errors_summary"])
+            else:
+                results["overall_message"] = "Pelo menos um dado de pessoa falhou na validação."
+        
+        # Remove a lista de erros do 'details' se não for desejada no resultado final,
+        # ou se você quiser que ela seja explícita apenas no log.
+        # Caso contrário, ela será parte do `details` retornado.
+        # del results["details"]["errors_summary"] 
 
         # Adiciona dado original ao resultado para consistência com o formato do BaseValidator
-        # Garante que dado_original seja um dicionário ou string, não um modelo Pydantic
         original_data_formatted = data.model_dump() if isinstance(data, PersonDataModel) else data
 
         return self._format_result(
@@ -213,6 +206,6 @@ class PessoaFullValidacao(BaseValidator): # Classe renomeada
             dado_original=original_data_formatted, # Mantenha o dado original formatado
             dado_normalizado=results["normalized_data"], # O dado normalizado será um dicionário
             mensagem=results["overall_message"],
-            details=results["details"],
+            details=results["details"], # Inclui 'individual_validations' e 'errors_summary'
             business_rule_applied=results["business_rule_applied"]
         )

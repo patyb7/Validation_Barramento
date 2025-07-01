@@ -5,11 +5,13 @@ import logging
 import asyncio
 from typing import Dict, Any, Optional
 
-from app.rules.base import BaseValidator # Importa a classe BaseValidator
+from app.rules.base import BaseValidator
+# Importa a base de dados simulada e o CEP de falha de API
+from app.tests.simulated_data import SIMULATED_CEP_RESPONSES, SIMULATED_CEP_API_FAILURE_CEP
 
 logger = logging.getLogger(__name__)
 
-class CEPValidator(BaseValidator): # Herda de BaseValidator
+class CEPValidator(BaseValidator):
     """
     Validador de Códigos de Endereçamento Postal (CEP) para o Brasil.
     Realiza validação de formato, verifica padrões comuns inválidos (sequenciais/repetidos)
@@ -24,12 +26,14 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
     VAL_CEP006 = "VAL_CEP006" # Erro na consulta da API externa (timeout, serviço fora)
 
     def __init__(self):
-        super().__init__(origin_name="cep_validator") # Inicializa BaseValidator
+        super().__init__(origin_name="cep_validator")
         logger.info("CEPValidator inicializado.")
 
     def _clean_cep(self, cep: str) -> str:
         """Remove caracteres não numéricos do CEP."""
-        return re.sub(r'\D', '', cep)
+        if not cep:
+            return ""
+        return re.sub(r'\D', '', str(cep))
 
     def _is_sequential_or_repeated(self, cleaned_cep: str) -> bool:
         """Verifica se o CEP tem 4 ou mais dígitos sequenciais ou repetidos."""
@@ -55,53 +59,22 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
 
     async def _consult_via_cep_api(self, cep: str) -> Optional[Dict[str, Any]]:
         """
-        Simula a consulta à API ViaCEP.
-        Em um ambiente real, faria uma requisição HTTP para 'https://viacep.com.br/ws/{cep}/json/'.
+        Simula a consulta à API ViaCEP usando dados de teste centralizados de `simulated_data.py`.
         """
         logger.debug(f"Simulando consulta à API ViaCEP para CEP: {cep}")
         await asyncio.sleep(0.05) # Simula um pequeno atraso de rede
 
-        # Dados simulados para ViaCEP
-        simulated_responses = {
-            "01001000": {
-                "cep": "01001-000",
-                "logradouro": "Praça da Sé",
-                "complemento": "lado ímpar",
-                "bairro": "Sé",
-                "localidade": "São Paulo",
-                "uf": "SP",
-                "ibge": "3550308",
-                "gia": "1004",
-                "ddd": "11",
-                "siafi": "7107"
-            },
-            "20040003": {
-                "cep": "20040-003",
-                "logradouro": "Rua da Quitanda",
-                "complemento": "",
-                "bairro": "Centro",
-                "localidade": "Rio de Janeiro",
-                "uf": "RJ",
-                "ibge": "3304557",
-                "gia": "",
-                "ddd": "21",
-                "siafi": "6001"
-            },
-            "99999999": {"erro": True}, # CEP não encontrado
-            "12345678": {"erro": True}, # Outro CEP não encontrado
-            "88888888": {"erro": True}, # Sequencial, mas também não encontrado na simulação
-        }
-
-        response_data = simulated_responses.get(cep)
-        
-        # Simula erro de API (ex: timeout, serviço fora) para alguns CEPs
-        if cep == "99999000": # Exemplo de CEP que simula erro de API
+        # Simula erro de API (ex: timeout, serviço fora) para o CEP definido em simulated_data.py
+        if cep == SIMULATED_CEP_API_FAILURE_CEP:
             logger.error(f"Simulando falha de API para o CEP: {cep}")
             raise Exception("Simulated API connection error or timeout.")
 
+        # Obtém os dados da resposta simulada do dicionário SIMULATED_CEP_RESPONSES
+        response_data = SIMULATED_CEP_RESPONSES.get(cep)
+        
         return response_data
 
-    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]: # MÉTODO PADRONIZADO 'validate'
+    async def validate(self, data: Any, **kwargs) -> Dict[str, Any]:
         """
         Valida um CEP (Código de Endereçamento Postal).
 
@@ -112,6 +85,7 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         Returns:
             Dict[str, Any]: Um dicionário com o resultado da validação, contendo:
                             - "is_valid" (bool): Se o CEP é considerado válido.
+                            - "dado_original" (Any): O dado original que foi submetido.
                             - "dado_normalizado" (str): O CEP limpo (apenas dígitos).
                             - "mensagem" (str): Mensagem explicativa do resultado.
                             - "origem_validacao" (str): Fonte da validação.
@@ -124,11 +98,11 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         if not isinstance(original_cep, str) or not original_cep.strip():
             return self._format_result(
                 is_valid=False,
-                dado_original=original_cep, # Adicionado dado_original
+                dado_original=original_cep,
                 dado_normalizado=None,
                 mensagem="CEP vazio ou tipo inválido.",
                 details={"input_original": original_cep},
-                business_rule_applied={"code": self.VAL_CEP003, "type": "CEP - Validação Primária", "name": "Input de CEP Inválido"} # Acessando via self. e nomeando
+                business_rule_applied={"code": self.VAL_CEP003, "type": "CEP - Validação Primária", "name": "Input de CEP Inválido"}
             )
 
         cleaned_cep = self._clean_cep(original_cep)
@@ -139,22 +113,22 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         if not cleaned_cep.isdigit() or len(cleaned_cep) != 8:
             return self._format_result(
                 is_valid=False,
-                dado_original=original_cep, # Adicionado dado_original
+                dado_original=original_cep,
                 dado_normalizado=cleaned_cep,
                 mensagem="Formato de CEP inválido: deve conter exatamente 8 dígitos numéricos.",
                 details=result_details,
-                business_rule_applied={"code": self.VAL_CEP005, "type": "CEP - Validação Primária", "name": "Formato Básico de CEP Inválido"} # Acessando via self. e nomeando
+                business_rule_applied={"code": self.VAL_CEP005, "type": "CEP - Validação Primária", "name": "Formato Básico de CEP Inválido"}
             )
 
         # 3. Verificação de Padrões Sequenciais/Repetidos
         if self._is_sequential_or_repeated(cleaned_cep):
             return self._format_result(
                 is_valid=False,
-                dado_original=original_cep, # Adicionado dado_original
+                dado_original=original_cep,
                 dado_normalizado=cleaned_cep,
                 mensagem="CEP inválido: contém dígitos sequenciais ou repetidos (e.g., 11111-111, 12345-678).",
                 details=result_details,
-                business_rule_applied={"code": self.VAL_CEP004, "type": "CEP - Validação Primária", "name": "CEP com Padrão Sequencial/Repetido"} # Acessando via self. e nomeando
+                business_rule_applied={"code": self.VAL_CEP004, "type": "CEP - Validação Primária", "name": "CEP com Padrão Sequencial/Repetido"}
             )
 
         # 4. Consulta à API Externa (simulada)
@@ -165,19 +139,19 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
             if api_data and not api_data.get("erro"):
                 is_valid_cep = True
                 message = "CEP válido e encontrado na base externa (ViaCEP simulado)."
-                validation_code = self.VAL_CEP001 # Acessando via self.
+                validation_code = self.VAL_CEP001
                 result_details["address_found"] = True
                 result_details["external_api_data"] = api_data
             else:
                 is_valid_cep = True # O formato é válido, mas não foi encontrado na simulação
                 message = "CEP válido, mas não encontrado na base externa (ViaCEP simulado)."
-                validation_code = self.VAL_CEP002 # Acessando via self.
+                validation_code = self.VAL_CEP002
                 result_details["address_found"] = False
 
         except Exception as e:
             is_valid_cep = False # Falha na API torna o resultado incerto ou inválido para processamento completo
             message = f"Erro ao consultar API externa de CEP: {e}. Validação base pode estar comprometida."
-            validation_code = self.VAL_CEP006 # Acessando via self.
+            validation_code = self.VAL_CEP006
             result_details["api_error"] = str(e)
             logger.error(f"Erro na validação de CEP {cleaned_cep} via API externa: {e}", exc_info=True)
 
@@ -185,15 +159,14 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         
         return self._format_result(
             is_valid=is_valid_cep,
-            dado_original=original_cep, # Adicionado dado_original
+            dado_original=original_cep,
             dado_normalizado=cleaned_cep,
             mensagem=message,
             details=result_details,
-            # Nome da regra de negócio para o caso de sucesso da validação do CEP
             business_rule_applied={"code": validation_code, "type": "CEP - Validação Primária", "name": "Validação Final de CEP"}
         )
 
-    def _format_result(self, is_valid: bool, dado_original: Any, dado_normalizado: Optional[str], mensagem: str, # Adicionado dado_original
+    def _format_result(self, is_valid: bool, dado_original: Any, dado_normalizado: Optional[str], mensagem: str,
                        details: Dict[str, Any], business_rule_applied: Dict[str, Any]) -> Dict[str, Any]:
         """
         Formata o resultado da validação em um dicionário padronizado.
@@ -211,10 +184,10 @@ class CEPValidator(BaseValidator): # Herda de BaseValidator
         """
         return {
             "is_valid": is_valid,
-            "dado_original": dado_original, # Passando dado_original
+            "dado_original": dado_original,
             "dado_normalizado": dado_normalizado,
             "mensagem": mensagem,
+            "origem_validacao": self.origin_name, # Garante que a origem seja sempre do validador
             "details": details,
             "business_rule_applied": business_rule_applied
         }
-# Fim do código do CEPValidator

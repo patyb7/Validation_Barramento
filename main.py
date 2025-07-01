@@ -34,10 +34,10 @@ from app.rules.pessoa.rg.validator import RGValidator
 from app.rules.pessoa.data_nascimento.validator import DataNascimentoValidator
 from app.rules.pessoa.composite_validator import PessoaFullValidacao
 
-# Importar os APIRouters
+# Importar os APIRouters (APENAS UMA VEZ)
 from app.api.routers.health import router as health_router
 from app.api.routers.history import router as history_router
-from app.api.routers.validation import router as validation_router # Importa o router de validação
+from app.api.routers.validation import router as validation_router
 
 # Configuração de logging centralizada
 logging.basicConfig(
@@ -51,6 +51,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Instâncias globais que serão inicializadas no lifespan
+# Não é estritamente necessário declará-las como globais aqui,
+# pois serão acessadas via app.state, mas para clareza em escopo global, é aceitável.
 db_manager: DatabaseManager
 api_key_manager: APIKeyManager
 validation_repo: ValidationRecordRepository
@@ -60,6 +62,7 @@ decision_rules: DecisionRules
 validation_service: ValidationService
 
 # Instâncias dos validadores específicos
+# Podem ser declaradas aqui ou diretamente dentro do lifespan se preferir
 phone_validator: PhoneValidator
 cep_validator: CEPValidator
 email_validator: EmailValidator
@@ -81,7 +84,7 @@ async def lifespan(app: FastAPI):
     global db_manager, api_key_manager, validation_repo, log_repo, qualification_repo, decision_rules, validation_service
     global phone_validator, cep_validator, email_validator, cpf_cnpj_validator, address_validator, nome_validator, sexo_validator, rg_validator, data_nascimento_validator, pessoa_full_validacao_validator
 
-    logger.info("Fase de STARTUP do Lifespan iniciada... (main.py)") # Log alterado para main.py
+    logger.info("Fase de STARTUP do Lifespan iniciada... (main.py)")
     
     # 1. Inicializa o DatabaseManager
     db_manager = DatabaseManager.get_instance()
@@ -142,6 +145,7 @@ async def lifespan(app: FastAPI):
         sexo_validator=sexo_validator,
         rg_validator=rg_validator,
         data_nascimento_validator=data_nascimento_validator,
+        pessoa_full_validacao_validator=pessoa_full_validacao_validator, # Não se esqueça de adicionar o validador composto aqui
         log_repo=log_repo
     )
     
@@ -240,6 +244,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     if hasattr(request.state, 'request_data') and isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest, UniversalValidationRequest)):
         client_entity_id_for_log = getattr(request.state.request_data, 'client_identifier', None)
         if isinstance(request.state.request_data, (SoftDeleteRequest, RestoreRequest)) and client_entity_id_for_log is None:
+            # Para soft-delete/restore, o 'operator_id' pode ser o identificador relevante se 'client_identifier' não se aplica diretamente ao registro que está sendo operado
             client_entity_id_for_log = getattr(request.state.request_data, 'operator_id', None)
 
 
@@ -249,7 +254,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 LogEntry(
                     tipo_evento="ERRO_HTTP",
                     app_origem=app_name,
-                    usuario_operador=getattr(request.state, 'operator_id', "N/A"),
+                    usuario_operador=getattr(request.state, 'operator_id', "N/A"), # Assuming operator_id is set in request.state
                     detalhes_evento_json={"path": request.url.path, "status_code": exc.status_code, "detail": exc.detail},
                     status_operacao="FALHA",
                     mensagem_log=f"Erro HTTP {exc.status_code}: {exc.detail}",
@@ -285,7 +290,7 @@ async def general_exception_handler(request: Request, exc: Exception):
                 LogEntry(
                     tipo_evento="ERRO_INTERNO_FATAL",
                     app_origem=app_name,
-                    usuario_operador=getattr(request.state, 'operator_id', "N/A"),
+                    usuario_operador=getattr(request.state, 'operator_id', "N/A"), # Assuming operator_id is set in request.state
                     detalhes_evento_json={"path": request.url.path, "exception_type": type(exc).__name__, "exception_message": str(exc), "traceback": traceback.format_exc()},
                     status_operacao="FALHA",
                     mensagem_log=f"Erro interno fatal: {str(exc)}",
@@ -302,18 +307,11 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 # --- Rotas da API ---
 
-# Removidas as definições diretas de endpoints, este arquivo agora apenas inclui os routers.
-# As definições desses endpoints estão agora nos seus respectivos arquivos de router (health.py, history.py, validation.py).
-
 @app.get("/", summary="Raiz da API", tags=["Status"])
 async def root():
     return {"message": "Bem-vindo ao Barramento de Validação de Dados. Acesse /docs para a documentação da API."}
 
 # Incluindo os routers para que suas rotas sejam registradas
-from app.api.routers.health import router as health_router
-from app.api.routers.history import router as history_router
-from app.api.routers.validation import router as validation_router
-
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(history_router, prefix="/api/v1")
 app.include_router(validation_router, prefix="/api/v1")
@@ -322,9 +320,9 @@ app.include_router(validation_router, prefix="/api/v1")
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app", # Referência alterada para main.py na raiz
-        host="0.0.0.0", 
-        port=8001, 
+        "main:app",
+        host="127.0.0.1",
+        port=8001,
         reload=True,
-        log_level=settings.LOG_LEVEL.lower() 
+        log_level=settings.LOG_LEVEL.lower()
     )
