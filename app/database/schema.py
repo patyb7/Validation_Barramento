@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS validation_records (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    dado_original TEXT NOT NULL,
-    dado_normalizado TEXT NOT NULL,
+    dado_original JSONB NOT NULL,
+    dado_normalizado JSONB NOT NULL,
     mensagem TEXT,
     origem_validacao VARCHAR(100),
     tipo_validacao VARCHAR(100) NOT NULL,
